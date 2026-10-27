@@ -80,7 +80,7 @@ unconfirmed and must be surfaced to the user.
 
 Permissions, foreground/background execution and reconnection are application
 policy. The sample uses foreground scanning only. SDK minimum Android is 8/API26;
-standard CS in Finder needs Android16/API36 and actual OS feature availability.
+standard CS acquisition needs Android16/API36 and actual OS feature availability.
 Third-party apps may use their own RingTransport with ProtocolClient; transport
 writes must serialize complete frames and report partial-write failure.
 

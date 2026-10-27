@@ -6,8 +6,8 @@
 实际交付范围见 [API](api.md) 和 [验证记录](validation.md)。
 
 目标：让 Rust 成为设备协议、能力策略、业务流程和可移植算法的统一实现。Python、
-Android SDK 提供符合各自语言习惯的接口，并执行平台 I/O；第三方 App 获得与官方 App
-相同的设备能力和校验行为。
+Android SDK 提供符合各自语言习惯的接口，并执行平台 I/O；各平台应用共用设备能力
+和校验行为。
 
 ## 1. 当前实现与缺口
 
@@ -27,7 +27,7 @@ Android SDK 提供符合各自语言习惯的接口，并执行平台 I/O；第�
 | Python `_ota.py`；Android `updateFirmware` | 完整升级生命周期、重连预算、同一设备验证、最终结果与进度 |
 | Python `_imu_calibration.py`、`_imu_profiles.py` | 物理量换算、静态窗口、六面拟合、零偏、独立验证、档案格式与绑定校验 |
 | Python `_codec.py`、`_pcm.py` | 音频格式识别、Speex/OP2C/Ogg/WAV 处理、PCM 流语义与可选解码器 |
-| Finder 距离显示逻辑 | 距离观测规范化、可信度、时间戳有效性、断连和过期状态 |
+| Android 距离适配 | 距离观测规范化、可信度、时间戳有效性、断连和过期状态 |
 | Python `_device.py` | 日志协议、时间同步协议、身份一致性规则；时钟读取和文件落盘留在宿主 |
 
 这些文件包含平台适配代码，迁移时按职责拆分，不整文件翻译。Rust 中已有的对象应直接

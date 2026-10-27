@@ -13,11 +13,13 @@ adapter SDK. The local checkout may still be named `OpenZiloCore`.
 - `android/sdk/`: Android BLE, GATT writes, Future/Flow bridges, OS clocks,
   connection/resource cleanup and device-level SDK conveniences. Portable rules
   and validation delegate to Rust. Artifact: `com.zilo:openzilo-sdk`.
-- `android/sample/`: minimal consumer example, not the official application.
+- `android/sample/`: minimal SDK consumer example.
 - Python BLE/asyncio adapters and CLI remain in the separate OpenZilo project.
-  Finder UI, pairing and Android Ranging acquisition remain in the application.
+  UI, pairing and Android Ranging acquisition belong to consuming applications.
 
 Use `apply_patch` for source edits. Keep Chinese and English documentation aligned.
+Do not name internal test applications or present them as official products in
+repository documentation, diagrams, examples or validation reports.
 Never commit device identifiers, recordings, firmware, credentials, private keys
 or generated native/build artifacts. Keep synthetic fixtures clearly identified.
 

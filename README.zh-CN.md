@@ -3,8 +3,7 @@
 [English](README.md) · MPL-2.0
 
 把 OpenZilo 的设备协议实现集中到一个 Rust 库，再通过 UniFFI 生成 Python、Kotlin
-绑定。现有 Python SDK 和 Android Finder 共同使用它；第三方可以直接依赖 Android
-SDK，开发自己的 App，无须依赖官方 App 的进程、账号或服务。
+绑定。开发者可以使用 Python 原生包或 Android SDK，连接兼容设备并处理数据。
 
 ## 仓库与产物
 
@@ -16,8 +15,8 @@ SDK，开发自己的 App，无须依赖官方 App 的进程、账号或服务�
 | 示例应用 | `android/sample/` | 演示接入，不包含正式 App 的业务逻辑 |
 
 Android SDK 与 Rust 库分别构建和打包；Android 类不会编入 Python wheel 或桌面原生库。
-Python 的 Bleak/asyncio SDK 与 CLI 保留在 `OpenZilo` 仓库；Finder 的界面、配对及系统
-测距采集保留在应用中。本地检出目录目前仍叫 `OpenZiloCore/`，仓库与包名称均为 `libopenzilo`。
+Python 的 Bleak/asyncio SDK 与 CLI 保留在 `OpenZilo` 仓库；界面、配对及系统测距采集
+由接入应用负责。本地检出目录目前仍叫 `OpenZiloCore/`，仓库与包名称均为 `libopenzilo`。
 
 ## 已实现的边界
 
@@ -25,8 +24,8 @@ Python 的 Bleak/asyncio SDK 与 CLI 保留在 `OpenZilo` 仓库；Finder 的界
   校验；IMU 换算、校准及可移植档案；OP2C/Ogg/WAV 导出；距离有效期；签名校验与 OTA 状态。
 - Android SDK：BluetoothGatt 连接、串行分片写入、异步请求、超时、取消、断连清理、
   有界事件 Flow，以及设备信息、能力、录音、下载、IMU、签名 OTA 接口。
-- 平台层：Python 保留 Bleak/asyncio；Android 保留扫描和权限管理；Finder 保留系统
-  RangingManager 获取 BLE CS 距离。PCM 解码和播放使用平台或现有 Python 实现。
+- 平台层：Python 使用 Bleak/asyncio；Android 执行扫描、权限管理及系统测距采集。
+  PCM 解码和播放使用平台或现有 Python 实现。
 
 “蓝牙 6.0”不等于手机一定开放测距接口。这个库不改变系统支持情况，也不提供硬件
 直接测角。查找功能只提供距离，不估算方向或空间位置。没有公开 PPG 接口。

@@ -2,9 +2,9 @@
 
 [中文](README.zh-CN.md) · MPL-2.0 · Rust core, Python binding, Android SDK
 
-A local shared implementation of OpenZilo protocol v4. The Python SDK and the
-Android Finder app use this core. Third-party Android apps can use `openzilo-sdk`
-without depending on either application.
+A portable implementation of OpenZilo protocol v4, with Python bindings and an
+Android SDK. Applications use `libopenzilo` or `openzilo-sdk` to communicate with
+compatible devices and process their data.
 
 ## Repository and artifacts
 
@@ -13,12 +13,12 @@ without depending on either application.
 | Rust crate and native Python package | `libopenzilo`, `src/` | Protocol, state machines, validation and portable algorithms |
 | Generated Kotlin bindings | `com.zilo.libopenzilo` | UniFFI calls into the same Rust implementation |
 | Android SDK | `com.zilo:openzilo-sdk`, `android/sdk/` | GATT, OS clocks, Future/Flow and connection/resource management |
-| Consumer example | `android/sample/` | Minimal integration, without official app business logic |
+| Consumer example | `android/sample/` | Minimal SDK integration |
 
 The Android SDK and Rust crate are built and packaged separately. Android classes
 are absent from Python wheels and desktop native libraries. The Bleak/asyncio SDK
-and CLI remain in OpenZilo; Finder UI, pairing and OS ranging acquisition remain
-in the application. The current local checkout is still named `OpenZiloCore/`;
+and CLI remain in OpenZilo. UI, pairing and OS ranging acquisition belong to the
+consuming application. The current local checkout is still named `OpenZiloCore/`;
 the repository and package are named `libopenzilo`.
 
 ```mermaid
@@ -28,8 +28,7 @@ flowchart TB
   P <--> C[Rust core / UniFFI]
   A <--> C
   A --> S[Android SDK: futures + Flow]
-  S --> F[Official Finder]
-  S --> T[Third-party apps]
+  S --> T[Applications]
 ```
 
 The core handles framing/CRC, capability admission, recording state and request
@@ -42,8 +41,8 @@ cancellation, disconnect cleanup and high-level device operations.
 BLE discovery/permissions, OS connection policy, audio decoding/playback, Android
 Channel Sounding acquisition belongs to its platform adapter.
 The library does not enable CS on unsupported hardware or provide a direct
-angle measurement. Finder displays distance and quality through Android Ranging;
-it does not estimate direction or position.
+angle measurement. Distance utilities validate application-supplied measurements;
+they do not estimate direction or position.
 No public PPG interface is provided.
 
 ## Build
@@ -116,8 +115,8 @@ try {
 Java uses `CompletableFuture`; Kotlin can use `awaitResult()` and `events()` Flow.
 See [API and lifecycle](docs/api.md) and the standalone
 [example app](android/sample/src/main/java/com/example/openzilo/MainActivity.kt).
-No account, server, official app process, or production signing private key is
-required for the SDK. The demo reads device information and capabilities.
+The SDK operates locally without an account or server. Firmware verification uses
+a trusted public key. The demo reads device information and capabilities.
 
 ## Use from Python
 

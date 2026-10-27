@@ -19,7 +19,7 @@
 - Kotlin: 12 transport/session tests passed against the real host native library,
   including application sink acceptance and managed IMU start/data/stop.
   Native library changes are declared as test inputs, so Rust changes rerun them.
-- A three-ABI Android AAR (arm64-v8a, x86_64, armeabi-v7a), local Maven repository, standalone example, Finder APK and
+- A three-ABI Android AAR (arm64-v8a, x86_64, armeabi-v7a), local Maven repository, standalone example and
   Linux x86_64 Python wheel were built. The example also builds by consuming the
   Maven publication with `-PusePublishedSdk=true`. The core wheel and source archive
   install in isolated environments. The dependent Python SDK wheel also installs
@@ -41,8 +41,7 @@ readback can contain the firmware's legacy unlimited duration of zero. That valu
 is preserved when reading; outgoing configuration remains bounded.
 
 The full Android OTA reconnect orchestration was not accepted on hardware.
-OTA state/signature tests use synthetic data. Finder has a
-distance-only scope; camera/AR features and dependencies have been removed.
+OTA state/signature tests use synthetic data.
 No hardware operations or firmware flashing were performed for this migration.
 Windows/macOS wheel jobs are configured in CI but have not run locally. Native
 PCM decoding reports Unavailable; FFmpeg/PyAV remain platform backends.

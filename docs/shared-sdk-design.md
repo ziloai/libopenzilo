@@ -10,8 +10,8 @@ supported. See [API](api.md) and [validation](validation.md) for delivered scope
 
 Rust should own device contracts, portable operation policies, state machines and
 algorithms. Python and Android execute platform I/O and expose idiomatic public
-interfaces. Third-party applications should receive the same validation and
-operation behavior as the official application.
+interfaces. Applications across supported platforms should share the same
+validation and operation behavior.
 
 ## Migration inventory
 
@@ -25,7 +25,7 @@ operation behavior as the official application.
 | `_ota.py`, Kotlin updateFirmware | Preflight, transfer/reboot/reconnect lifecycle, identity/version verification |
 | `_imu_calibration.py`, `_imu_profiles.py` | Physical units, static windows, six-face fit, gyro bias, validation and profile schema |
 | `_codec.py`, `_pcm.py` | Containers, PCM block semantics and optional decoder backends |
-| Finder distance display | Distance observations, confidence, timestamp validity, connection generation and expiry |
+| Android distance adapter | Distance observations, confidence, timestamp validity, connection generation and expiry |
 | `_device.py` | Log/time-sync protocol and identity rules |
 
 These files also contain platform adapters; migrate responsibilities rather than

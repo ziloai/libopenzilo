@@ -15,11 +15,10 @@ the proposal's single operation/effect envelope is not required by the current A
 The two languages have their own async adapters; Python cannot use Android GATT,
 and a phone does not need to run a Python interpreter.
 
-The official Finder uses `OpenZiloDevice` for its GATT connection and system-info
-query. Android's RangingManager supplies CS distance. Finder displays distance and
-measurement quality. Rust determines distance validity and expiry; Python can
-replay equivalent observations. Finding is distance-only; camera
-tracking, direction estimation and spatial positioning are outside the scope.
+`OpenZiloDevice` supplies GATT connections and device operations. Applications
+obtain distance observations through platform APIs such as Android RangingManager.
+Rust determines distance validity and expiry; Python can replay equivalent
+observations. The distance API does not estimate direction or spatial position.
 
 The current protocol has no wire transaction ID. A local request ID prevents
 callbacks from completing the wrong local future, but cannot disambiguate a late
