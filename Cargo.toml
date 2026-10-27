@@ -1,0 +1,33 @@
+[package]
+name = "openzilo-core"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+description = "Shared OpenZilo device protocol engine for Python and mobile applications"
+
+[lib]
+name = "openzilo_core"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["uniffi/cli"]
+
+[dependencies]
+uniffi = "0.31"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+zip = { version = "2", default-features = false }
+regex = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "debuginfo"

@@ -1,0 +1,7 @@
+[bindings.kotlin]
+package_name = "com.zilo.core"
+cdylib_name = "openzilo_core"
+android = true
+
+[bindings.python]
+cdylib_name = "openzilo_core"

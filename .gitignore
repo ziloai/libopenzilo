@@ -1,0 +1,16 @@
+/target/
+/dist/
+**/build/
+.gradle/
+.venv/
+__pycache__/
+local.properties
+*.keystore
+*.bin
+*.hex
+*.ota.zip
+**/jniLibs/
+
+!tests/fixtures/*.hex
+
+.kotlin/

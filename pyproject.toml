@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "openzilo-core"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Shared native OpenZilo protocol and device core"
+license = "MPL-2.0"
+readme = "README.md"
+
+[tool.maturin]
+bindings = "uniffi"
+features = ["cli"]
