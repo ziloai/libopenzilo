@@ -1,4 +1,4 @@
-# OpenZilo Core
+# libopenzilo
 
 [English](README.md) · MPL-2.0
 
@@ -6,10 +6,23 @@
 绑定。现有 Python SDK 和 Android Finder 共同使用它；第三方可以直接依赖 Android
 SDK，开发自己的 App，无须依赖官方 App 的进程、账号或服务。
 
+## 仓库与产物
+
+| 部分 | 名称 / 位置 | 职责 |
+| --- | --- | --- |
+| Rust 库与 Python 原生包 | `libopenzilo`，`src/` | 协议、状态机、校验及可移植算法 |
+| Kotlin 原生绑定 | `com.zilo.libopenzilo` | 调用同一 Rust 实现，由 UniFFI 生成 |
+| Android SDK | `com.zilo:openzilo-sdk`，`android/sdk/` | GATT、系统时钟、Future/Flow、连接与资源管理 |
+| 示例应用 | `android/sample/` | 演示接入，不包含正式 App 的业务逻辑 |
+
+Android SDK 与 Rust 库分别构建和打包；Android 类不会编入 Python wheel 或桌面原生库。
+Python 的 Bleak/asyncio SDK 与 CLI 保留在 `OpenZilo` 仓库；Finder 的界面、配对及系统
+测距采集保留在应用中。本地检出目录目前仍叫 `OpenZiloCore/`，仓库与包名称均为 `libopenzilo`。
+
 ## 已实现的边界
 
-- 核心：协议 v4 封包、CRC、分包；能力发现；系统信息、IMU 与设备事件解析；录音参数
-  和状态；音频重组、OP2C 容器、直播帧校验；请求会话；签名固件校验与 OTA 状态。
+- 核心：协议 v4、能力准入、录音状态和请求恢复；普通/快速下载及分块接收；直播完整性
+  校验；IMU 换算、校准及可移植档案；OP2C/Ogg/WAV 导出；距离有效期；签名校验与 OTA 状态。
 - Android SDK：BluetoothGatt 连接、串行分片写入、异步请求、超时、取消、断连清理、
   有界事件 Flow，以及设备信息、能力、录音、下载、IMU、签名 OTA 接口。
 - 平台层：Python 保留 Bleak/asyncio；Android 保留扫描和权限管理；Finder 保留系统
@@ -40,16 +53,23 @@ cd android
 ```
 
 Android 构建会自动编译 Rust 并生成 Kotlin 绑定。默认 AAR 和示例 APK 包含
-**arm64-v8a**；其他架构需要安装相应 Rust target、通过 `tools/build_android.py --abi`
-构建，并调整 SDK 的 `abiFilters`。Python wheel 也需要按发布平台分别构建。
+**arm64-v8a**；安装相应 Rust target 后，使用
+`-PopenziloAbis=arm64-v8a,x86_64,armeabi-v7a` 同时打包多个架构，`x86_64` 可用于模拟器。
+CI 配置同时构建多架构 AAR，以及 Linux x86_64、Windows x86_64、macOS arm64 wheel；
+远端任务通过后才能确认对应平台支持。
 
 本地 Maven 仓库位于 `dist/maven/`。第三方 App 添加该仓库后依赖
 `com.zilo:openzilo-sdk:0.1.0`。Maven 元数据包含 JNA、Kotlin 协程等依赖；仅复制 AAR
 时需要自行添加这些依赖。详细调用示例见 [英文 README](README.md)、
 [API 与生命周期](docs/api.md)，完整可编译示例见 `android/sample/`。
 
-现有 Python SDK 在相邻的 `OpenZilo/` 中通过 uv 引用本库，公开 API 保持兼容。
-正式发布前需要把本地路径依赖改成已发布的 wheel 版本。
+现有 Python SDK 在本地通过 uv 引用相邻的 `OpenZiloCore/`，发行包声明
+`libopenzilo>=0.1.0,<0.2`，安装时不要求相邻源码。应先发布并验证核心 wheel，再分发
+依赖它的 SDK。已有公开 API 保持兼容，新增分块下载和距离回放接口。
+
+`library_info()` 返回已链接核心的版本、API 契约和可用功能。本版不包含原生 PCM 解码器，
+`decode_opus_pcm()` 返回类型化的 `Unavailable`；Python 继续使用可选 FFmpeg/PyAV 后端。
+Ogg 导出沿用 OP2C 的零预跳过约定，无法还原录音中未保存的编码器延迟元数据。
 
 OTA 只接受由独立可信公钥验证的签名包；测试固件需要明确选择允许。传输结束只代表
 等待重启，重新连接同一设备并验证精确版本后才能确认安装成功。不会将生产私钥打包

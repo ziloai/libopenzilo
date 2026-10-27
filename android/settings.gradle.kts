@@ -20,6 +20,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "OpenZiloCore"
+rootProject.name = "libopenzilo"
 
 include(":sdk", ":sample")

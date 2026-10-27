@@ -5,7 +5,7 @@ import android.app.Activity
 import android.app.Instrumentation
 import android.bluetooth.BluetoothManager
 import android.os.Bundle
-import com.zilo.core.*
+import com.zilo.libopenzilo.*
 import com.zilo.sdk.OpenZiloDevice
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit

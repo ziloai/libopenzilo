@@ -1,10 +1,25 @@
-# OpenZilo Core
+# libopenzilo
 
 [中文](README.zh-CN.md) · MPL-2.0 · Rust core, Python binding, Android SDK
 
 A local shared implementation of OpenZilo protocol v4. The Python SDK and the
 Android Finder app use this core. Third-party Android apps can use `openzilo-sdk`
 without depending on either application.
+
+## Repository and artifacts
+
+| Part | Name / location | Responsibility |
+| --- | --- | --- |
+| Rust crate and native Python package | `libopenzilo`, `src/` | Protocol, state machines, validation and portable algorithms |
+| Generated Kotlin bindings | `com.zilo.libopenzilo` | UniFFI calls into the same Rust implementation |
+| Android SDK | `com.zilo:openzilo-sdk`, `android/sdk/` | GATT, OS clocks, Future/Flow and connection/resource management |
+| Consumer example | `android/sample/` | Minimal integration, without official app business logic |
+
+The Android SDK and Rust crate are built and packaged separately. Android classes
+are absent from Python wheels and desktop native libraries. The Bleak/asyncio SDK
+and CLI remain in OpenZilo; Finder UI, pairing and OS ranging acquisition remain
+in the application. The current local checkout is still named `OpenZiloCore/`;
+the repository and package are named `libopenzilo`.
 
 ```mermaid
 flowchart TB
@@ -17,9 +32,10 @@ flowchart TB
   S --> T[Third-party apps]
 ```
 
-The core handles framing/CRC, command bodies, capability contracts, system and
-IMU data, recording configuration/status, audio reassembly, OP2C containers,
-live stream ordering, request lifecycles, signed firmware bundles and OTA state.
+The core handles framing/CRC, capability admission, recording state and request
+recovery, normal/fast downloads and bounded sink transfers, live validation,
+IMU conversion/calibration and portable profiles, OP2C/Ogg/WAV export,
+distance validity, signed firmware bundles and OTA state.
 The Android SDK supplies serialized GATT writes, async requests, bounded events,
 cancellation, disconnect cleanup and high-level device operations.
 
@@ -57,7 +73,10 @@ cd android
 Gradle 8.13 can run the same commands. `tools/build_android.py --abi x86_64` or
 `--abi armeabi-v7a` can build additional installed Rust targets; the default
 artifact and sample ship **arm64-v8a only**, suitable for current physical phones.
-Update the SDK `abiFilters` when packaging other ABIs.
+To package several ABIs together, install their Rust targets and pass
+`-PopenziloAbis=arm64-v8a,x86_64,armeabi-v7a` to Gradle. The `x86_64` ABI supports
+Android emulator builds. CI builds that AAR and Linux x86_64, Windows x86_64 and
+macOS arm64 wheels; those remote jobs must pass before claiming target support.
 
 Outputs: Python wheel in `dist/`, SDK AAR in `android/sdk/build/outputs/aar/`,
 example APK in `android/sample/build/outputs/apk/debug/`, and local Maven
@@ -102,8 +121,10 @@ required for the SDK. The demo reads device information and capabilities.
 
 ## Use from Python
 
-The existing `OpenZilo` SDK depends on this sibling project through uv. Its
-public API remains unchanged:
+The existing `OpenZilo` SDK uses this sibling project for local uv development.
+Its distribution declares `libopenzilo>=0.1.0,<0.2`; installed packages resolve
+the published dependency without a sibling checkout. Existing public APIs remain
+compatible, with additional sink downloads and distance replay:
 
 ```sh
 cd ../OpenZilo
@@ -114,12 +135,17 @@ uv run python -m unittest discover -s tests -v
 Or install the wheel directly for transport-independent core APIs:
 
 ```python
-import openzilo_core as core
+import libopenzilo as core
 wire = core.encode_packet(0x0101, b"")
 assert core.decode_packet(wire).command == 0x0101
 ```
 
 The wheel is native to its build OS/architecture. Build separate wheels on each
 supported target before publishing; the current local build is Linux x86_64.
-Do not publish the Python SDK with its local sibling dependency unresolved.
+Publish and validate the core wheels before distributing the dependent SDK.
 See [integration boundaries](docs/architecture.md) and [validation](docs/validation.md).
+
+`library_info()` identifies the linked native core and its API contract/features.
+No native PCM decoder is bundled: `decode_opus_pcm()` returns typed `Unavailable`.
+Python retains its optional FFmpeg/PyAV backends. Ogg export preserves OP2C's
+zero pre-skip convention; it cannot reconstruct missing encoder delay metadata.

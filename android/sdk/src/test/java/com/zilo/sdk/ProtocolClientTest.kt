@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.zilo.sdk
 
-import com.zilo.core.*
+import com.zilo.libopenzilo.*
 import java.util.concurrent.*
 import org.junit.Assert.*
 import org.junit.Test
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.first
 
 class ProtocolClientTest {
     private class Fake : RingTransport {
@@ -54,7 +57,8 @@ class ProtocolClientTest {
         try {
             val response = client.request(DeviceRequest.SystemInfo)
             assertEquals(0x101, wire.next().command.toInt())
-            wire.incoming(0x102, byteArrayOf(0, 0))
+            // A full typed system response, including empty identity strings.
+            wire.incoming(0x102, ByteArray(25))
             assertEquals(0x102, response.get(2, TimeUnit.SECONDS).command.toInt())
         } finally {
             client.close()
@@ -93,7 +97,10 @@ class ProtocolClientTest {
             } catch (e: ExecutionException) {
                 assertEquals("timeout", (e.cause as RingException).kind)
             }
-            val second = client.request(DeviceRequest.SystemInfo)
+            val retry = client.request(DeviceRequest.SystemInfo)
+            try { retry.get(2, TimeUnit.SECONDS); fail("Late reply must not complete a retry") }
+            catch (e: ExecutionException) { assertEquals("outcome_unknown", (e.cause as RingException).kind) }
+            val second = client.request(DeviceRequest.AudioCount)
             wire.next()
             wire.disconnected(IllegalStateException("gone"))
             try {
@@ -139,7 +146,7 @@ class ProtocolClientTest {
     }
 
     @Test
-    fun requestCancellationReleasesCoreSlot() {
+    fun requestCancellationQuarantinesAmbiguousResponse() {
         val wire = Fake()
         val client = ProtocolClient(wire)
         try {
@@ -147,9 +154,9 @@ class ProtocolClientTest {
             wire.next()
             first.cancel(false)
             val second = client.request(DeviceRequest.SystemInfo)
-            wire.next()
-            wire.incoming(0x102)
-            assertNotNull(second.get(2, TimeUnit.SECONDS))
+            try { second.get(2, TimeUnit.SECONDS); fail("Must reconnect before same-command retry") }
+            catch (e: ExecutionException) { assertEquals("outcome_unknown", (e.cause as RingException).kind) }
+            assertTrue(wire.frames.isEmpty())
         } finally {
             client.close()
         }
@@ -251,5 +258,66 @@ class ProtocolClientTest {
             fail("Expected closed connection")
         } catch (_: ExecutionException) {}
         client.close()
+    }
+
+    @Test
+    fun sinkDownloadDoesNotReadAheadOfApplicationWrite() {
+        val wire = Fake()
+        val client = ProtocolClient(wire)
+        fun u32(n: Int) = java.nio.ByteBuffer.allocate(4).putInt(n).array()
+        val accepted = CompletableFuture<Void>()
+        val delivered = CountDownLatch(1)
+        wire.onSend = { packet -> when (packet.command.toInt()) {
+            0x503 -> wire.incoming(0x504, byteArrayOf(0, 0) + u32(0) + u32(0) + u32(4))
+            0x506 -> wire.incoming(0x505, byteArrayOf(0, 0) + u32(0) + u32(0) + u32(4) + byteArrayOf(1, 1, 2, 3, 4))
+            0x507 -> wire.incoming(0x508, byteArrayOf(0, 0) + u32(0))
+        } }
+        try {
+            val result = client.downloadAudioToSink(0, AudioSink { offset, data ->
+                assertEquals(0L, offset)
+                assertArrayEquals(byteArrayOf(1, 2, 3, 4), data)
+                delivered.countDown()
+                accepted
+            })
+            assertTrue(delivered.await(2, TimeUnit.SECONDS))
+            assertEquals(0x503, wire.next().command.toInt())
+            assertEquals(0x506, wire.next().command.toInt())
+            assertNull(wire.frames.poll(50, TimeUnit.MILLISECONDS))
+            assertFalse(result.isDone)
+            accepted.complete(null)
+            assertEquals(4, result.get(2, TimeUnit.SECONDS).dataSize.toInt())
+            assertEquals(0x507, wire.next().command.toInt())
+        } finally { client.close() }
+    }
+
+    @Test
+    fun managedImuStreamNegotiatesSharedFixtureAndStopsAfterFirstBatch() = runBlocking {
+        val wire = Fake()
+        val client = ProtocolClient(wire)
+        val hex = javaClass.getResourceAsStream("/capabilities-v1.hex")!!.bufferedReader().readText().trim()
+        val fixture = hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        val caps = parseCapabilities(fixture)
+        fun text(value: String): ByteArray {
+            val bytes = value.toByteArray()
+            return byteArrayOf((bytes.size shr 8).toByte(), bytes.size.toByte()) + bytes
+        }
+        wire.onSend = { packet -> when (packet.command.toInt()) {
+            0x101 -> wire.incoming(0x102, byteArrayOf(0, 0) + text(caps.firmwareVersion) + ByteArray(15) + text("") + text("synthetic") + text(caps.model))
+            0x105 -> wire.incoming(0x106, fixture)
+            0x601 -> {
+                wire.incoming(0x602, byteArrayOf(0, 0, 0, 100, 0, 16, 7, 0xd0.toByte()))
+                val sample = java.nio.ByteBuffer.allocate(16).putInt(1).putShort(2048.toShort()).put(ByteArray(10)).array()
+                wire.incoming(0x605, byteArrayOf(0, 0, 0, 0, 0, 0) + sample)
+            }
+            0x603 -> wire.incoming(0x604, byteArrayOf(0, 0))
+        } }
+        try {
+            assertEquals(CapabilitySource.DEVICE, client.negotiateCapabilities().get(2, TimeUnit.SECONDS).source)
+            wire.frames.clear()
+            val batch = withTimeout(3000) { client.imuStream().first() }
+            assertEquals(2048, batch.samples.single().accelX.toInt())
+            assertEquals(0x601, wire.next().command.toInt())
+            assertEquals(0x603, wire.next().command.toInt())
+        } finally { client.close() }
     }
 }

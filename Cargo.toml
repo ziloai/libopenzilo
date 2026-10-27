@@ -1,12 +1,14 @@
 [package]
-name = "openzilo-core"
+name = "libopenzilo"
 version = "0.1.0"
 edition = "2021"
 license = "MPL-2.0"
 description = "Shared OpenZilo device protocol engine for Python and mobile applications"
+repository = "https://github.com/ziloai/libopenzilo"
+readme = "README.md"
 
 [lib]
-name = "openzilo_core"
+name = "libopenzilo"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [[bin]]
@@ -26,8 +28,12 @@ sha2 = "0.10"
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 zip = { version = "2", default-features = false }
 regex = "1"
+time = { version = "0.3", features = ["parsing"] }
 
 [profile.release]
 lto = true
 codegen-units = 1
 strip = "debuginfo"
+
+[build-dependencies]
+sha2 = "0.10"

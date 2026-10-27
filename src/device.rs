@@ -113,7 +113,9 @@ pub fn parse_capabilities(body: Vec<u8>) -> Result<Capabilities> {
         return Err(invalid("Invalid boot identity or protocol list"));
     }
     let protocols: Vec<u16> = fields[&6]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|v| u16::from_be_bytes([v[0], v[1]]))
         .collect();
     if !protocols.contains(&4) {
@@ -312,7 +314,7 @@ pub fn recording_config_body(c: RecordingConfig) -> Result<Vec<u8>> {
         || c.gain_left_q8 > 1024
         || c.gain_right_q8 > 1024
         || !(20..=60000).contains(&c.max_duration_ms)
-        || c.max_duration_ms % 20 != 0
+        || !c.max_duration_ms.is_multiple_of(20)
         || (c.disconnect_policy == 1 && c.output != 1 && c.output != 3)
     {
         return Err(invalid("Invalid recording configuration"));
@@ -496,7 +498,7 @@ pub fn validate_recording_config(config: RecordingConfig, limits: RecordingLimit
         || c.max_duration_ms < l.duration_min_ms
         || c.max_duration_ms > l.duration_max_ms
         || l.duration_step_ms == 0
-        || c.max_duration_ms % l.duration_step_ms != 0
+        || !c.max_duration_ms.is_multiple_of(l.duration_step_ms)
         || (c.disconnect_policy != 0 && l.continue_outputs_mask & (1 << c.output) == 0)
         || l.sample_rate_hz != 16000
         || l.frame_duration_ms != 20
@@ -510,4 +512,39 @@ pub fn validate_recording_config(config: RecordingConfig, limits: RecordingLimit
 #[uniffi::export]
 pub fn validate_opus_packet(packet: Vec<u8>, channels: u16) -> Result<()> {
     validate_opus(&packet, channels)
+}
+
+record!(LogStorage {
+    page_size: u32,
+    total_len: u32
+});
+#[uniffi::export]
+pub fn parse_log_storage(body: Vec<u8>) -> Result<LogStorage> {
+    let mut r = Reader::new(&body);
+    r.success()?;
+    let value = LogStorage {
+        page_size: r.u32()?,
+        total_len: r.u32()?,
+    };
+    r.end()?;
+    Ok(value)
+}
+#[uniffi::export]
+pub fn parse_log_chunk(body: Vec<u8>, max_length: u32) -> Result<Vec<u8>> {
+    let mut r = Reader::new(&body);
+    r.success()?;
+    let n = r.u32()?;
+    if n > max_length || n as usize != r.remaining() {
+        return Err(invalid(
+            "Log chunk length differs from response or requested limit",
+        ));
+    }
+    Ok(r.bytes(n as usize)?.to_vec())
+}
+#[uniffi::export]
+pub fn parse_time_request(body: Vec<u8>) -> Result<u32> {
+    let mut r = Reader::new(&body);
+    let value = r.u32()?;
+    r.end()?;
+    Ok(value)
 }

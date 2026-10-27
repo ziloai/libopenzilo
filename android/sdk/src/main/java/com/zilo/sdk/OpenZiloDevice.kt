@@ -9,7 +9,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 
-/** Java-friendly view; advanced Kotlin APIs expose com.zilo.core records directly. */
+/** Java-friendly view; advanced Kotlin APIs expose com.zilo.libopenzilo records directly. */
 data class RingInfo(
     val firmwareVersion: String,
     val model: String,
@@ -49,10 +49,10 @@ private constructor(
         val attempt =
             java.util.concurrent.atomic.AtomicReference<CompletableFuture<OpenZiloDevice>?>(null)
         val candidate = java.util.concurrent.atomic.AtomicReference<OpenZiloDevice?>(null)
-        val state = java.util.concurrent.atomic.AtomicReference<com.zilo.core.OtaTransfer?>(null)
+        val state = java.util.concurrent.atomic.AtomicReference<com.zilo.libopenzilo.OtaTransfer?>(null)
         // Verify signature before performing device operations.
         try {
-            com.zilo.core.inspectFirmwareBundle(bundle, trustedPublicKey)
+            com.zilo.libopenzilo.inspectFirmwareBundle(bundle, trustedPublicKey)
         } catch (e: Throwable) {
             reconnect.shutdown()
             result.completeExceptionally(e)
@@ -86,8 +86,16 @@ private constructor(
                 }
                 state.set(transfer.second)
                 close()
+                fun now() = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()).toULong()
+                val budget = com.zilo.libopenzilo.DeadlineBudget(now(), 60000u, 60000u)
+                result.whenComplete { _, _ -> budget.close() }
                 fun retry() {
                     if (result.isDone) return
+                    try { budget.remaining(now()) }
+                    catch (_: Throwable) {
+                        result.completeExceptionally(RingException("timeout", "Firmware installation is unconfirmed after reconnect timeout"))
+                        return
+                    }
                     val connection = connect(context, peer)
                     attempt.set(connection)
                     connection.whenComplete { ring, connectError ->

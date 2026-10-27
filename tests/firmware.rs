@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Synthetic keys/payloads only: this does not contain a usable firmware image.
-use openzilo_core::*;
+use libopenzilo::*;
 use p256::{
     ecdsa::{signature::Signer, Signature, SigningKey},
     pkcs8::EncodePublicKey,

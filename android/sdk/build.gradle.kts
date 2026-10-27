@@ -4,6 +4,9 @@ plugins {
     id("maven-publish")
 }
 
+val sdkAbis = providers.gradleProperty("openziloAbis").orElse("arm64-v8a").get().split(",")
+val coreVersion = Regex("(?m)^version = \"([^\"]+)\"$").find(projectDir.resolve("../../Cargo.toml").readText())!!.groupValues[1]
+
 android {
     namespace = "com.zilo.sdk"
     compileSdk = 36
@@ -12,13 +15,15 @@ android {
     defaultConfig {
         minSdk = 26
         consumerProguardFiles("consumer-rules.pro")
-        ndk { abiFilters += "arm64-v8a" }
+        ndk { abiFilters += sdkAbis }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     sourceSets["main"].java.srcDir("build/generated/uniffi")
+    sourceSets["main"].jniLibs.setSrcDirs(listOf("build/generated/jniLibs"))
+    sourceSets["test"].resources.srcDir("../../tests/fixtures")
     publishing { singleVariant("release") { withSourcesJar() } }
 }
 
@@ -42,7 +47,13 @@ afterEvaluate {
                 from(components["release"])
                 groupId = "com.zilo"
                 artifactId = "openzilo-sdk"
-                version = "0.1.0"
+                version = coreVersion
+                pom {
+                    name.set("OpenZilo SDK")
+                    description.set("OpenZilo shared protocol and Android BLE SDK")
+                    url.set("https://github.com/ziloai/libopenzilo")
+                    licenses { license { name.set("Mozilla Public License 2.0"); url.set("https://www.mozilla.org/MPL/2.0/") } }
+                }
             }
         }
         repositories { maven { url = uri("../../dist/maven") } }
@@ -52,7 +63,7 @@ afterEvaluate {
 val buildNative by
     tasks.registering(Exec::class) {
         workingDir = projectDir.resolve("../..").canonicalFile
-        commandLine("python3", "tools/build_android.py")
+        commandLine(listOf("python3", "tools/build_android.py") + sdkAbis.flatMap { listOf("--abi", it) })
     }
 
 tasks.named("preBuild") { dependsOn(buildNative) }
@@ -62,5 +73,5 @@ tasks.withType<Test>().configureEach {
         System.getenv("CARGO_TARGET_DIR") ?: projectDir.resolve("../../target").canonicalPath
     systemProperty("jna.library.path", "$cargoTarget/debug")
     val nativeSuffix = if (System.getProperty("os.name").startsWith("Mac")) "dylib" else "so"
-    inputs.file("$cargoTarget/debug/libopenzilo_core.$nativeSuffix")
+    inputs.file("$cargoTarget/debug/liblibopenzilo.$nativeSuffix")
 }

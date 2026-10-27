@@ -1,6 +1,11 @@
 # Shared Rust SDK design proposal
 
-Status: proposal, not implemented. Based on the 2026-10-27 source audit.
+Status: design reference with implementation in progress from the 2026-10-27 audit.
+The current crate implements engine/policy, download/sink state machines,
+shared calibration/profiles, audio export, distance validity and deadline budgets.
+Adapters compose these objects rather than exposing the conceptual single Effect
+envelope below. Optional native decoders remain unavailable; platform decoders stay
+supported. See [API](api.md) and [validation](validation.md) for delivered scope.
 [Chinese design](shared-sdk-design.zh-CN.md).
 
 Rust should own device contracts, portable operation policies, state machines and
@@ -31,8 +36,9 @@ LiveValidator, AudioAssembler and OtaTransfer, before introducing replacements.
 
 Keep one Cargo package initially. Organize modules as model, protocol, engine,
 device, operations (recording/download/live/OTA/logs), sensors (IMU/calibration/
-profiles), audio, finding and ffi. Do not claim unsupported PPG/health algorithms;
-new device functions require a verified protocol and capability contract first.
+profiles), audio, finding and ffi. Sensor data processing and health analysis
+can be added as Rust modules according to product needs and shared through
+the same interfaces.
 
 ## Host-driven engine
 

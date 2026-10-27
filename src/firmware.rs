@@ -301,23 +301,33 @@ impl OtaTransfer {
         if s.phase != OtaPhase::AwaitingReboot {
             return Err(invalid("OTA transfer is not complete"));
         }
-        if after.model != s.before.model
-            || (!s.before.cpuid.is_empty() && after.cpuid != s.before.cpuid)
-            || (!s.before.sn.is_empty() && after.sn != s.before.sn)
-        {
-            return Err(invalid(
-                "Reconnected device identity differs; installation is unconfirmed",
-            ));
-        }
-        if after.firmware_version != s.bundle.version {
-            return Err(invalid(
-                "Firmware version verification failed; installation is unconfirmed",
-            ));
-        }
+        verify_running_identity(s.before.clone(), after, s.bundle.version.clone())?;
         s.phase = OtaPhase::Verified;
         Ok(())
     }
     pub fn cancel(&self) {
         self.state.lock().unwrap().phase = OtaPhase::Cancelled;
     }
+}
+
+#[uniffi::export]
+pub fn verify_running_identity(
+    before: DeviceInfo,
+    after: DeviceInfo,
+    target_version: String,
+) -> Result<()> {
+    if after.model != before.model
+        || (!before.cpuid.is_empty() && after.cpuid != before.cpuid)
+        || (!before.sn.is_empty() && after.sn != before.sn)
+    {
+        return Err(invalid(
+            "Reconnected device identity differs; installation is unconfirmed",
+        ));
+    }
+    if after.firmware_version != target_version {
+        return Err(invalid(
+            "Firmware version verification failed; installation is unconfirmed",
+        ));
+    }
+    Ok(())
 }

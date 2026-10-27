@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-use openzilo_core::*;
+use libopenzilo::*;
 fn packet(command: u16, body: Vec<u8>) -> Packet {
     decode_packet(encode_packet(command, body).unwrap()).unwrap()
 }
@@ -58,9 +58,16 @@ fn request_routing_stale_generation_timeout_cancel() {
     );
     let b = s.begin(1, 2, vec![], 1, 10, None).unwrap();
     assert!(matches!(s.tick(11)[0],Delivery::Failure{request_id,..}if request_id==b.id));
+    assert!(matches!(
+        s.begin(1, 2, vec![], 12, 10, None),
+        Err(CoreError::OutcomeUnknown)
+    ));
+    s.disconnect(g);
+    let g = s.open().unwrap();
     let c = s.begin(1, 2, vec![], 12, 10, None).unwrap();
     assert!(s.cancel(c.id).is_some());
-    let d = s.begin(1, 2, vec![], 12, 10, None).unwrap();
+    assert!(s.begin(1, 2, vec![], 12, 10, None).is_err());
+    let d = s.begin(3, 4, vec![], 12, 10, None).unwrap();
     assert_eq!(s.disconnect(g).len(), 1);
     assert!(s.cancel(d.id).is_none());
     assert!(s.open().unwrap() > g);
@@ -81,8 +88,16 @@ fn device_errors_backpressure_exclusive_and_partial_write() {
     assert!(s.release_exclusive("other".into()).is_err());
     s.release_exclusive("ota".into()).unwrap();
     s.receive(encode_packet(7, vec![]).unwrap(), g, 2).unwrap();
-    assert!(s.receive(encode_packet(8, vec![]).unwrap(), g, 2).is_err());
-    assert_eq!(s.take_events().len(), 1);
+    assert!(matches!(
+        s.receive(encode_packet(8, vec![]).unwrap(), g, 2)
+            .unwrap()
+            .last(),
+        Some(Delivery::Fault {
+            code: ErrorCode::Overflow,
+            ..
+        })
+    ));
+    assert!(s.take_events().is_empty());
     s.interrupt_write(g);
     assert!(s.begin(1, 2, vec![], 0, 50, None).is_err());
 }

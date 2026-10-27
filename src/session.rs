@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 use crate::{encode_packet, invalid, CoreError, Packet, PacketDecoder, Result};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::Mutex,
 };
 #[derive(Clone, Debug, uniffi::Record)]
@@ -22,8 +22,15 @@ pub enum Delivery {
     Failure {
         request_id: u64,
         kind: String,
+        code: crate::ErrorCode,
+        recovery: crate::Recovery,
         message: String,
         device_code: Option<u16>,
+    },
+    Fault {
+        code: crate::ErrorCode,
+        message: String,
+        recovery: crate::Recovery,
     },
 }
 struct Pending {
@@ -41,6 +48,7 @@ struct State {
     pending: BTreeMap<u64, Pending>,
     events: VecDeque<Packet>,
     exclusive: Option<String>,
+    quarantined: BTreeSet<u16>,
 }
 #[derive(uniffi::Object)]
 pub struct DeviceSession {
@@ -52,12 +60,32 @@ fn failure(id: u64, kind: &str, message: &str, code: Option<u16>) -> Delivery {
     Delivery::Failure {
         request_id: id,
         kind: kind.into(),
+        code: match kind {
+            "device" => crate::ErrorCode::DeviceRejected,
+            "timeout" => crate::ErrorCode::Timeout,
+            "cancelled" => crate::ErrorCode::Cancelled,
+            "overflow" => crate::ErrorCode::Overflow,
+            _ => crate::ErrorCode::Disconnected,
+        },
+        recovery: if kind == "device" {
+            crate::Recovery::None
+        } else if matches!(kind, "timeout" | "cancelled") {
+            crate::Recovery::ReconnectAndQueryStatus
+        } else {
+            crate::Recovery::Reconnect
+        },
         message: message.into(),
         device_code: code,
     }
 }
 #[uniffi::export]
 impl DeviceSession {
+    pub(crate) fn quarantine(&self, command: u16, response: u16) {
+        let mut s = self.state.lock().unwrap();
+        s.quarantined.insert(command);
+        s.quarantined.insert(response);
+    }
+
     #[uniffi::constructor]
     pub fn new(event_capacity: u32) -> Result<Self> {
         if !(1..=65536).contains(&event_capacity) {
@@ -84,6 +112,7 @@ impl DeviceSession {
         s.write_failed = false;
         s.events.clear();
         s.pending.clear();
+        s.quarantined.clear();
         s.exclusive = None;
         self.decoder.clear();
         Ok(s.generation)
@@ -101,9 +130,17 @@ impl DeviceSession {
         if !s.connected || s.write_failed {
             return Err(CoreError::Disconnected);
         }
-        if s.exclusive.is_some() && s.exclusive != owner {
+        if s.exclusive.is_some() && s.exclusive != owner && command != 0x402 {
             return Err(CoreError::Busy {
                 detail: "An exclusive operation owns this connection".into(),
+            });
+        }
+        if s.quarantined.contains(&command) || s.quarantined.contains(&response) {
+            return Err(CoreError::OutcomeUnknown);
+        }
+        if s.pending.len() >= 256 {
+            return Err(CoreError::Busy {
+                detail: "Too many pending requests".into(),
             });
         }
         if s.pending
@@ -142,59 +179,29 @@ impl DeviceSession {
         })
     }
     pub fn receive(&self, data: Vec<u8>, generation: u64, now_ms: u64) -> Result<Vec<Delivery>> {
-        let mut s = self.state.lock().unwrap();
-        if !s.connected || s.generation != generation {
-            return Ok(Vec::new());
-        }
-        let mut out = expire(&mut s, now_ms);
-        let packets = match self.decoder.feed(data) {
-            Ok(p) => p,
-            Err(e) => {
-                self.decoder.clear();
-                return Err(e);
-            }
-        };
-        for packet in packets {
-            if packet.command == 0x1ff {
-                if packet.body.len() != 4 {
-                    return Err(invalid("Invalid standard error response"));
-                }
-                let command = u16::from_be_bytes([packet.body[0], packet.body[1]]);
-                let code = u16::from_be_bytes([packet.body[2], packet.body[3]]);
-                if code == 0 {
-                    return Err(invalid("Invalid standard error response"));
-                }
-                if let Some(id) = s
-                    .pending
-                    .values()
-                    .find(|p| p.command == command)
-                    .map(|p| p.id)
-                {
-                    s.pending.remove(&id);
-                    out.push(failure(id, "device", "Device rejected request", Some(code)));
-                    continue;
-                }
-            }
-            if let Some(id) = s
-                .pending
-                .values()
-                .find(|p| p.response == packet.command)
-                .map(|p| p.id)
-            {
-                s.pending.remove(&id);
-                out.push(Delivery::Response {
-                    request_id: id,
-                    packet,
-                });
-            } else {
-                if s.events.len() >= self.event_capacity as usize {
-                    return Err(CoreError::Overflow);
-                }
-                s.events.push_back(packet.clone());
-                out.push(Delivery::Event { packet });
-            }
-        }
-        Ok(out)
+        self.receive_with_buffer(data, generation, now_ms, true)
+    }
+    /// Direct delivery for hosts that own bounded queues; avoids duplicate event storage.
+    pub fn receive_direct(
+        &self,
+        data: Vec<u8>,
+        generation: u64,
+        now_ms: u64,
+    ) -> Result<Vec<Delivery>> {
+        self.receive_with_buffer(data, generation, now_ms, false)
+    }
+    pub fn next_deadline(&self) -> Option<u64> {
+        self.state
+            .lock()
+            .unwrap()
+            .pending
+            .values()
+            .map(|p| p.deadline)
+            .min()
+    }
+    pub fn reconnect_required(&self) -> bool {
+        let s = self.state.lock().unwrap();
+        s.write_failed || !s.quarantined.is_empty()
     }
     /// Encode a command without a response while respecting connection ownership.
     pub fn prepare_send(
@@ -207,7 +214,7 @@ impl DeviceSession {
         if !s.connected || s.write_failed {
             return Err(CoreError::Disconnected);
         }
-        if s.exclusive.is_some() && s.exclusive != owner {
+        if s.exclusive.is_some() && s.exclusive != owner && command != 0x402 {
             return Err(CoreError::Busy {
                 detail: "An exclusive operation owns this connection".into(),
             });
@@ -219,9 +226,11 @@ impl DeviceSession {
     }
     pub fn cancel(&self, request_id: u64) -> Option<Delivery> {
         let mut s = self.state.lock().unwrap();
-        s.pending
-            .remove(&request_id)
-            .map(|_| failure(request_id, "cancelled", "Operation cancelled", None))
+        s.pending.remove(&request_id).map(|p| {
+            s.quarantined.insert(p.command);
+            s.quarantined.insert(p.response);
+            failure(request_id, "cancelled", "Operation cancelled", None)
+        })
     }
     pub fn disconnect(&self, generation: u64) -> Vec<Delivery> {
         let mut s = self.state.lock().unwrap();
@@ -282,7 +291,10 @@ fn expire(s: &mut State, now: u64) -> Vec<Delivery> {
         .collect();
     ids.into_iter()
         .map(|id| {
-            s.pending.remove(&id);
+            if let Some(p) = s.pending.remove(&id) {
+                s.quarantined.insert(p.command);
+                s.quarantined.insert(p.response);
+            }
             failure(id, "timeout", "Request timed out", None)
         })
         .collect()
@@ -297,7 +309,8 @@ struct AudioState {
     size: u32,
     data: Vec<u8>,
     received: Vec<bool>,
-    complete: bool,
+    received_bytes: u32,
+    missing: usize,
 }
 #[uniffi::export]
 impl AudioAssembler {
@@ -312,7 +325,8 @@ impl AudioAssembler {
                 size: data_size,
                 data: vec![0; data_size as usize],
                 received: vec![false; data_size as usize],
-                complete: false,
+                received_bytes: 0,
+                missing: 0,
             }),
         })
     }
@@ -337,27 +351,120 @@ impl AudioAssembler {
         for (i, &b) in frame.data.iter().enumerate() {
             let j = start + i;
             s.data[j] = b;
+            if !s.received[j] {
+                s.received_bytes += 1;
+            }
             s.received[j] = true;
         }
-        if frame.is_end {
-            s.complete = true;
+        while s.missing < s.received.len() && s.received[s.missing] {
+            s.missing += 1;
         }
-        Ok(s.received.iter().filter(|v| **v).count() as u32)
+        Ok(s.received_bytes)
     }
     pub fn finish(&self) -> Result<Vec<u8>> {
         let s = self.state.lock().unwrap();
-        if s.received.iter().any(|v| !*v) {
+        if s.received_bytes != s.size {
             return Err(invalid("Audio file is incomplete"));
         }
         Ok(s.data.clone())
     }
     pub fn missing_offset(&self) -> Option<u32> {
-        self.state
-            .lock()
-            .unwrap()
-            .received
-            .iter()
-            .position(|v| !*v)
-            .map(|i| i as u32)
+        let s = self.state.lock().unwrap();
+        (s.missing < s.size as usize).then_some(s.missing as u32)
+    }
+}
+
+impl DeviceSession {
+    fn receive_with_buffer(
+        &self,
+        data: Vec<u8>,
+        generation: u64,
+        now_ms: u64,
+        buffered: bool,
+    ) -> Result<Vec<Delivery>> {
+        let mut s = self.state.lock().unwrap();
+        if !s.connected || s.generation != generation {
+            return Ok(Vec::new());
+        }
+        let mut out = expire(&mut s, now_ms);
+        let batch = self.decoder.feed_batch(data);
+        let mut fault = batch
+            .fault
+            .map(|message| (crate::ErrorCode::InvalidData, message));
+        for packet in batch.packets {
+            if packet.command == 0x1ff {
+                if packet.body.len() != 4 {
+                    fault = Some((
+                        crate::ErrorCode::InvalidData,
+                        "Invalid standard error response".into(),
+                    ));
+                    break;
+                }
+                let command = u16::from_be_bytes([packet.body[0], packet.body[1]]);
+                let code = u16::from_be_bytes([packet.body[2], packet.body[3]]);
+                if code == 0 {
+                    fault = Some((
+                        crate::ErrorCode::InvalidData,
+                        "Invalid standard error response".into(),
+                    ));
+                    break;
+                }
+                if let Some(id) = s
+                    .pending
+                    .values()
+                    .find(|p| p.command == command)
+                    .map(|p| p.id)
+                {
+                    s.pending.remove(&id);
+                    out.push(failure(id, "device", "Device rejected request", Some(code)));
+                    continue;
+                }
+            }
+            if let Some(id) = s
+                .pending
+                .values()
+                .find(|p| p.response == packet.command)
+                .map(|p| p.id)
+            {
+                s.pending.remove(&id);
+                out.push(Delivery::Response {
+                    request_id: id,
+                    packet,
+                });
+            } else {
+                if buffered && s.events.len() >= self.event_capacity as usize {
+                    fault = Some((crate::ErrorCode::Overflow, "Receive queue overflow".into()));
+                    break;
+                }
+                if buffered {
+                    s.events.push_back(packet.clone());
+                }
+                out.push(Delivery::Event { packet });
+            }
+        }
+        if let Some((code, message)) = fault {
+            // All removed requests have a delivery, even when a later frame fails.
+            for id in s.pending.keys() {
+                out.push(Delivery::Failure {
+                    request_id: *id,
+                    kind: "protocol".into(),
+                    code,
+                    recovery: crate::Recovery::Reconnect,
+                    message: message.clone(),
+                    device_code: None,
+                });
+            }
+            s.pending.clear();
+            s.connected = false;
+            s.events.clear();
+            s.exclusive = None;
+            self.decoder.clear();
+            out.push(Delivery::Fault {
+                code,
+                message,
+                recovery: crate::Recovery::Reconnect,
+            });
+        }
+        Ok(out)
     }
 }

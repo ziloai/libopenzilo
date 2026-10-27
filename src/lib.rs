@@ -1,4 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
+mod deadline;
+pub use deadline::*;
+mod streaming;
+pub use streaming::*;
+mod download;
+pub use download::*;
+mod finding;
+pub use finding::*;
+mod audio;
+pub use audio::*;
+mod profiles;
+pub use profiles::*;
+mod sensors;
+pub use sensors::*;
+mod engine;
+pub use engine::*;
+mod policy;
+pub use policy::*;
 mod commands;
 mod device;
 mod firmware;
@@ -29,6 +47,10 @@ pub enum CoreError {
     Disconnected,
     #[error("operation cancelled")]
     Cancelled,
+    #[error("Operation outcome unknown; reconnect and query status")]
+    OutcomeUnknown,
+    #[error("Optional capability unavailable: {detail}")]
+    Unavailable { detail: String },
     #[error("receive queue overflow")]
     Overflow,
 }

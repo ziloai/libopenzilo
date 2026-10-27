@@ -10,16 +10,24 @@ Cancel an unfinished connect future to close its GATT connection.
 |---|---|
 | `systemInfo()` | Core DeviceInfo, including firmware and device identity |
 | `discoverCapabilities()` | Validated firmware/model identity and feature contracts |
+| `negotiateCapabilities()` | Connection-scoped Device / VerifiedLegacyProfile / Unknown result |
 | `audioCount()`, `audioInfo(index)` | Stored recording metadata |
 | `downloadAudio(index, maxBytes)` | Verified bounded byte reassembly; leaves recordings intact |
+| `downloadAudio(index, maxBytes, quick)` | Shared normal/fast transfer; both require END confirmation |
+| `downloadAudioToSink(index, sink, maxBytes)` | Bounded chunks; the next read waits for the sink future |
 | `recordingConfig()`, `setRecordingConfig(config)` | Volatile settings, verified readback |
 | `startRecording()` | Nonzero session ID; capture completion is not confirmed yet |
 | `stopRecording(id, cancel)` | Session ACK; poll status to confirm saved result |
 | `recordingStatus()` | State, error and optional saved-file index |
+| `waitRecordingFinished(id)`, `stopAndWaitRecording(id, cancel)` | Same-session terminal status; a stop ACK alone is insufficient |
 | `subscribeLive(enabled)` | Subscribe before starting LIVE output; unsubscribe afterward |
 | `startImu()`, `stopImu()` | IMU stream control; parse event bodies with core parsers |
 | `clearAudio(confirmed = true)` | Explicit destructive confirmation required |
 | `events()` | Bounded Flow of unsolicited core Packets |
+| `imuStream()` | Managed raw batches with sequence/time continuity checks |
+| `calibratedImuStream(profile, localDeviceKey)` | Managed physical-unit batches with checked profile/source |
+| `liveAudioStream()` | One validated START/DATA/END recording; cancellation unsubscribes |
+| `deviceEvents()` | Typed tap/button/gesture events |
 | `request(DeviceRequest, timeout)` | Typed command specifications, including time/log requests |
 | `transferFirmware(...)` | Signed transfer; returns OtaTransfer in AwaitingReboot phase |
 
@@ -33,15 +41,24 @@ feature profile for unrecognized firmware.
 
 Each request has a finite timeout. Request futures support cancellation; typed
 future cancellation propagates to the underlying request. No automatic retries
-are made for state-changing commands. A cancelled or failed audio download closes
+are made for state-changing commands. Timeout, cancellation or malformed typed
+replies quarantine that command/response pair until reconnect; a late reply cannot
+complete a new same-command request. A cancelled or failed audio download closes
 the transport to release its device-side extraction state. Audio and OTA acquire
 exclusive connection ownership. A successful download does not delete the file.
 
-Collect `events()` before starting an IMU report or live recording. The native
+Prefer the managed typed streams. They register before START/subscription and
+release on exit. For manual streaming, collect `events()` before starting reports.
+The native
 `parse_imu`, `parse_device_event` and `LiveValidator` functions validate their
 bodies. Live audio packets are provisional until a successful END validates the
 session, sequence, byte count and dropped-frame count. `build_opus_recording`
 packages verified Opus packets into an OP2C file; it does not decode PCM.
+`export_ogg_opus` and `export_wav_pcm` export containers; they do not decode audio.
+Sink implementations return promptly and complete their future after accepting
+the bytes. On failure, callers retain partial output; it is never presented as a
+complete recording. The default in-memory limit is 16 MiB on Android; sink
+downloads default to 1 GiB and do not retain the complete recording.
 `awaitResult()` bridges futures to cancellable Kotlin coroutines. Java callers
 can use `whenComplete` and `thenCompose`, and should manage cancellation when
 composing their own futures.
@@ -52,7 +69,7 @@ the replacement device connection and RingInfo; close that device after use.
 The old connection is closed and reconnection has a 60-second limit.
 `transferFirmware` remains available for apps that supply their own reconnect UI.
 
-OTA requires recording stopped, live subscription disabled, device capabilities,
+OTA requires recording stopped, live and IMU subscriptions disabled, device capabilities,
 an independently trusted public key and the correct board/model. Its transfer
 result **does not confirm installation**. Close the old connection, reconnect the
 same ring, obtain fresh system info, and call `OtaTransfer.verifyRunning(info)`.
@@ -66,3 +83,13 @@ policy. The sample uses foreground scanning only. SDK minimum Android is 8/API26
 standard CS in Finder needs Android16/API36 and actual OS feature availability.
 Third-party apps may use their own RingTransport with ProtocolClient; transport
 writes must serialize complete frames and report partial-write failure.
+
+`RingException.code` and `.recovery` carry structured SDK failure/recovery enums;
+`.deviceCode` retains the firmware error code. Python keeps its existing exception
+classes and exposes `.sdk_code` and `.recovery` for native failures.
+
+Calibration v1 profiles remain bound to a local locator. Portable v2 profiles
+bind to checked system identity through `stable_device_key`; an address hash is
+never promoted automatically. Raw/calibrated batch types remain distinct.
+`DistanceMonitor` adapts elapsed-realtime measurements to `DistanceTracker`;
+quality categories retain their OS meaning and expired distances have no value.

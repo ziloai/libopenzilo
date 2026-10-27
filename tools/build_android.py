@@ -30,10 +30,16 @@ def main():
     metadata=json.loads(subprocess.check_output(["cargo","metadata","--locked","--format-version","1","--no-deps"],cwd=ROOT))
     target=Path(metadata["target_directory"])
     run("cargo","build","--locked","--features","cli")
-    dynamic=target/"debug"/("libopenzilo_core.dylib" if platform.system()=="Darwin" else "libopenzilo_core.so")
+    dynamic=target/"debug"/("liblibopenzilo.dylib" if platform.system()=="Darwin" else "liblibopenzilo.so")
     generated=ROOT/"android/sdk/build/generated/uniffi"
+    # Generated namespaces must not survive a crate/binding rename.
+    if generated.exists():
+        shutil.rmtree(generated)
     generated.mkdir(parents=True,exist_ok=True)
     run(target/"debug/uniffi-bindgen","generate","--library",dynamic,"--language","kotlin","--out-dir",generated,"--config",ROOT/"uniffi.toml","--no-format")
+    native_output=ROOT/"android/sdk/build/generated/jniLibs"
+    if native_output.exists():
+        shutil.rmtree(native_output)
     for abi in args.abi or ["arm64-v8a"]:
         rust,clang=ABIS[abi]
         linker=args.ndk.resolve()/"toolchains/llvm/prebuilt"/host/"bin"/(clang+"26-clang")
@@ -42,9 +48,9 @@ def main():
         env=os.environ.copy()
         env["CARGO_TARGET_"+rust.upper().replace("-","_")+"_LINKER"]=str(linker)
         run("cargo","build","--locked","--release","--lib","--target",rust,env=env)
-        destination=ROOT/"android/sdk/src/main/jniLibs"/abi
+        destination=native_output/abi
         destination.mkdir(parents=True,exist_ok=True)
-        shutil.copy2(target/rust/"release/libopenzilo_core.so",destination)
+        shutil.copy2(target/rust/"release/liblibopenzilo.so",destination)
     print("Native libraries and Kotlin bindings ready")
 
 if __name__=="__main__": main()

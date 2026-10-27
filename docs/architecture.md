@@ -3,20 +3,22 @@
 The portable Rust library has no BLE stack, UI, filesystem, network, account or
 background-service policy. Its exported UniFFI records are transport-neutral.
 `prepare_request` defines command bodies; a transport sends complete encoded
-frames and feeds received bytes to `PacketDecoder` or `DeviceSession`.
+frames and feeds received bytes to `DeviceEngine` (or the lower-level decoder/session).
 
-Python's existing asyncio client retains its queue/callback scheduling,
-capability fallback policy, audio operation ownership, optional FFmpeg/AV PCM
-conversions and reconnection behavior. Its wire framing, system/audio/IMU/live
-parsers, capability parser, recording configuration and firmware bundle
-verification now delegate to the Rust core. Android's `ProtocolClient` uses the
-shared request lifecycle, typed parsers, audio assembler and OTA transfer state.
+Python and Android retain async scheduling, BLE I/O, file sinks, optional audio
+decoders and actual reconnect attempts. Both use the shared engine's request
+routing, capability contracts, recording/subscription states and uncertainty
+rules. Normal/fast download policy, sink backpressure, live validation, calibration,
+profile schema, container export, deadline budgets and OTA transfer/identity
+verification execute in Rust. High-level adapters compose these core objects;
+the proposal's single operation/effect envelope is not required by the current API.
 The two languages have their own async adapters; Python cannot use Android GATT,
 and a phone does not need to run a Python interpreter.
 
 The official Finder uses `OpenZiloDevice` for its GATT connection and system-info
 query. Android's RangingManager supplies CS distance. Finder displays distance and
-measurement quality, and clears stale readings. Finding is distance-only; camera
+measurement quality. Rust determines distance validity and expiry; Python can
+replay equivalent observations. Finding is distance-only; camera
 tracking, direction estimation and spatial positioning are outside the scope.
 
 The current protocol has no wire transaction ID. A local request ID prevents
@@ -27,21 +29,23 @@ automatically retrying START. DeviceSession generation IDs reject callbacks from
 older connections. A partial frame-write error makes the connection unusable.
 
 The default Android event channel has bounded buffers. Slow consumers fail
-explicitly. Native event storage is drained by ProtocolClient after each receive.
-Direct DeviceSession users must call `take_events()` after processing deliveries
-(or consume the storage themselves) to avoid filling that bounded queue.
+explicitly. `DeviceEngine` delivers events directly to the host without duplicate
+native storage. Lower-level `DeviceSession.receive()` users must drain
+`take_events()`; `receive_direct()` is available for hosts with their own queues.
+Malformed frames produce a connection fault after all preceding valid deliveries;
+remaining requests are failed explicitly.
 Callbacks must be brief and must not block the session thread.
 
-Firmware bundles use the ring_sound stored ZIP format and P-256 signature over
+Firmware bundles use the signed stored ZIP format and P-256 signature over
 the original manifest bytes, with independently provided PEM trust anchors.
 The signed metadata and payload hash are verified before any OTA request.
 The current firmware format supplies security-version metadata, but this SDK
 does not assert an unread device rollback floor or bypass bootloader checks.
 
-## Proposed next boundary
+## Design and optional extensions
 
-The implementation above describes the current release. The proposed expansion
-moves portable operation policies and algorithms into the Rust SDK while keeping
-platform I/O and language-native async objects in the bindings. See the
+The implementation above describes the current source. See the
 [shared SDK design proposal](shared-sdk-design.md) and its
-[Chinese version](shared-sdk-design.zh-CN.md). The proposal is not implemented yet.
+[Chinese version](shared-sdk-design.zh-CN.md). The modules are implemented as
+composable state machines in one crate. Optional native codec backends and further
+API consolidation remain extensions; hardware acceptance is separate from tests.

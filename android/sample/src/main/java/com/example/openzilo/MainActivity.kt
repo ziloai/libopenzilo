@@ -107,7 +107,7 @@ class MainActivity : Activity() {
                                                         line(
                                                             if (err != null) "能力不可用：${err.message}"
                                                             else
-                                                                "共享核心：${com.zilo.core.coreVersion()}\n能力：${caps.features.joinToString { it.name }}"
+                                                                "共享核心：${com.zilo.libopenzilo.coreVersion()}\n能力：${caps.features.joinToString { it.name }}"
                                                         )
                                                     }
                                                 }

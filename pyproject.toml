@@ -3,12 +3,15 @@ requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"
 
 [project]
-name = "openzilo-core"
+name = "libopenzilo"
 version = "0.1.0"
 requires-python = ">=3.10"
 description = "Shared native OpenZilo protocol and device core"
 license = "MPL-2.0"
 readme = "README.md"
+
+[project.urls]
+Repository = "https://github.com/ziloai/libopenzilo"
 
 [tool.maturin]
 bindings = "uniffi"

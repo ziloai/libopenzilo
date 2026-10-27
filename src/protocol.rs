@@ -82,6 +82,11 @@ fn decode(d: &[u8]) -> Result<Packet> {
         body_crc: sum,
     })
 }
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct DecodeBatch {
+    pub packets: Vec<Packet>,
+    pub fault: Option<String>,
+}
 #[derive(uniffi::Object, Default)]
 pub struct PacketDecoder {
     buffer: Mutex<Vec<u8>>,
@@ -99,6 +104,14 @@ impl PacketDecoder {
         self.buffer.lock().unwrap().len() as u64
     }
     pub fn feed(&self, data: Vec<u8>) -> Result<Vec<Packet>> {
+        let batch = self.feed_batch(data);
+        match batch.fault {
+            Some(detail) => Err(invalid(detail)),
+            None => Ok(batch.packets),
+        }
+    }
+    /// Preserve valid frames preceding a malformed frame in the same notification.
+    pub fn feed_batch(&self, data: Vec<u8>) -> DecodeBatch {
         let mut b = self.buffer.lock().unwrap();
         let mut packets = Vec::new();
         // Bounded chunks avoid allocating arbitrarily large incomplete frames.
@@ -120,7 +133,10 @@ impl PacketDecoder {
                 let n = u32::from_be_bytes(b[5..9].try_into().unwrap()) as usize;
                 if n > MAX_BODY {
                     b.clear();
-                    return Err(invalid(format!("Body too large: {n} bytes")));
+                    return DecodeBatch {
+                        packets,
+                        fault: Some(format!("Body too large: {n} bytes")),
+                    };
                 }
                 if b.len() < 11 + n {
                     break;
@@ -128,11 +144,19 @@ impl PacketDecoder {
                 let raw: Vec<u8> = b.drain(..11 + n).collect();
                 match decode(&raw) {
                     Ok(p) => packets.push(p),
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        return DecodeBatch {
+                            packets,
+                            fault: Some(e.to_string()),
+                        };
+                    }
                 }
             }
         }
-        Ok(packets)
+        DecodeBatch {
+            packets,
+            fault: None,
+        }
     }
 }
 pub(crate) struct Reader<'a> {
@@ -171,7 +195,7 @@ impl<'a> Reader<'a> {
     }
     pub fn string(&mut self) -> Result<String> {
         let n = self.u16()? as usize;
-        Ok(String::from_utf8_lossy(self.bytes(n)?).into_owned())
+        String::from_utf8(self.bytes(n)?.to_vec()).map_err(|_| invalid("Invalid UTF-8 string"))
     }
     pub fn success(&mut self) -> Result<()> {
         let code = self.u16()?;
