@@ -38,3 +38,11 @@ the original manifest bytes, with independently provided PEM trust anchors.
 The signed metadata and payload hash are verified before any OTA request.
 The current firmware format supplies security-version metadata, but this SDK
 does not assert an unread device rollback floor or bypass bootloader checks.
+
+## Proposed next boundary
+
+The implementation above describes the current release. The proposed expansion
+moves portable operation policies and algorithms into the Rust SDK while keeping
+platform I/O and language-native async objects in the bindings. See the
+[shared SDK design proposal](shared-sdk-design.md) and its
+[Chinese version](shared-sdk-design.zh-CN.md). The proposal is not implemented yet.
