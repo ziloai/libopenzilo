@@ -26,8 +26,9 @@ checks: audio START requests include the reserved u16 field, and configuration
 readback can contain the firmware's legacy unlimited duration of zero. That value
 is preserved when reading; outgoing configuration remains bounded.
 
-The full Android OTA reconnect orchestration and AR camera direction were not
-accepted on hardware in this change. OTA state/signature tests use synthetic data.
+The full Android OTA reconnect orchestration was not accepted on hardware in
+this change. OTA state/signature tests use synthetic data. Finder now has a
+distance-only scope; camera/AR features and dependencies have been removed.
 No new firmware was flashed during the shared SDK hardware check.
 
 The final build uses system JDK 21, SDK/NDK under `~/Android/Sdk`, ordinary Cargo

@@ -20,7 +20,7 @@ operation behavior as the official application.
 | `_ota.py`, Kotlin updateFirmware | Preflight, transfer/reboot/reconnect lifecycle, identity/version verification |
 | `_imu_calibration.py`, `_imu_profiles.py` | Physical units, static windows, six-face fit, gyro bias, validation and profile schema |
 | `_codec.py`, `_pcm.py` | Containers, PCM block semantics and optional decoder backends |
-| Java PositionEstimator, parts of ArGuide | Multilateration, temporal matching, geometry, quality and expiry |
+| Finder distance display | Distance observations, confidence, timestamp validity, connection generation and expiry |
 | `_device.py` | Log/time-sync protocol and identity rules |
 
 These files also contain platform adapters; migrate responsibilities rather than
@@ -115,27 +115,25 @@ host backends. Playback/device routing stays platform-specific. Keep the FFI
 surface stable, expose library_features, and return typed Unavailable errors when
 a backend is not compiled in so bindings cannot silently mismatch native variants.
 
-Move distance/pose temporal matching, sample filtering, multilateration, geometry,
-residual/quality gates, reset and expiry rules into finding. Results distinguish
-distance-only, need-more-motion, horizontal direction, 3D position, ambiguity,
-tracking loss and stale data. Do not invent height for horizontal solutions or
-label heuristic quality as calibrated probability.
+Finding is distance-only. Android acquires standard BLE CS measurements using
+RangingManager. Rust normalizes units, quality, timestamps and connection
+generations, with waiting/measuring/low-quality/stale/unavailable/disconnected
+states. Preserve the platform's confidence semantics without presenting it as a
+calibrated probability. Reject invalid, old-connection and stale measurements;
+clear expired readings. Hosts convert system timestamps to the agreed monotonic
+clock domain and manage permissions, pairing, sessions, display and localization.
 
-The host supplies observations in declared units, frames and clock domains with
-connection/tracking generations and timestamp uncertainty. Different clock origins
-cannot be aligned by unit conversion alone. Preserve the current receipt-time
-approximation's limitations. Android retains RangingManager, ARCore/camera access,
-display orientation, projection, rendering and localized text. Rust returns
-coordinates, directions and structured diagnostics; Python can replay identical
-observations offline. Rust cannot enable unsupported CS or derive a direct bearing
-from RSSI.
+The first version preserves valid raw distances without unvalidated smoothing or
+extrapolation. Python can replay identical distance observations for policy tests;
+live CS availability remains platform/hardware-dependent. Camera tracking, pose
+fusion, multilateration, bearing and spatial positioning are outside the scope.
 
 ## Platform boundary
 
 Python retains Bleak, asyncio objects, CLI/confirmation, paths/storage, playback and
 optional external decoders. Android retains BluetoothGatt/pairing/permissions,
 coroutines/Futures/Flow, lifecycle/background policy, storage, system ranging,
-ARCore, camera, audio output and UI. Platform adapters implement MTU fragmentation
+audio output and UI. Platform adapters implement MTU fragmentation
 and write acknowledgements without interleaving protocol frames. Rust owns logical
 frame ordering. Batch samples, audio blocks and events across FFI.
 
@@ -144,7 +142,7 @@ frame ordering. Batch samples, audio blocks and events across FFI.
 1. P0: common errors, capability policy, operation/resource engine and full
    recording/download/live/OTA lifecycles. Preserve Python API/exception adapters.
 2. P1: IMU algorithms and portable profile validation/migration.
-3. P1: finding algorithms, temporal/quality rules and Python replay.
+3. P1: distance observation, quality/expiry policies and Python distance replay.
 4. P2: audio containers/stream semantics, then optional validated decoder backends.
 
 Use identical synthetic/de-identified inputs across Rust/Python/Android and compare

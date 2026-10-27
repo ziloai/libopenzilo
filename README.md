@@ -24,9 +24,10 @@ The Android SDK supplies serialized GATT writes, async requests, bounded events,
 cancellation, disconnect cleanup and high-level device operations.
 
 BLE discovery/permissions, OS connection policy, audio decoding/playback, Android
-Channel Sounding and ARCore camera tracking belong to their platform adapters.
+Channel Sounding acquisition belongs to its platform adapter.
 The library does not enable CS on unsupported hardware or provide a direct
-angle measurement. The current Finder keeps its Android Ranging and AR UI.
+angle measurement. Finder displays distance and quality through Android Ranging;
+it does not estimate direction or position.
 No public PPG interface is provided.
 
 ## Build

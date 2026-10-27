@@ -15,10 +15,9 @@ The two languages have their own async adapters; Python cannot use Android GATT,
 and a phone does not need to run a Python interpreter.
 
 The official Finder uses `OpenZiloDevice` for its GATT connection and system-info
-query. Android's RangingManager owns CS and the app owns ARCore camera lifecycle,
-pose sampling and rendering. These are independent of the NUS protocol. Shared
-core integration does not change the positioning algorithm or guarantee AR
-tracking quality.
+query. Android's RangingManager supplies CS distance. Finder displays distance and
+measurement quality, and clears stale readings. Finding is distance-only; camera
+tracking, direction estimation and spatial positioning are outside the scope.
 
 The current protocol has no wire transaction ID. A local request ID prevents
 callbacks from completing the wrong local future, but cannot disambiguate a late

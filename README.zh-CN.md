@@ -13,10 +13,10 @@ SDK，开发自己的 App，无须依赖官方 App 的进程、账号或服务�
 - Android SDK：BluetoothGatt 连接、串行分片写入、异步请求、超时、取消、断连清理、
   有界事件 Flow，以及设备信息、能力、录音、下载、IMU、签名 OTA 接口。
 - 平台层：Python 保留 Bleak/asyncio；Android 保留扫描和权限管理；Finder 保留系统
-  RangingManager 与 ARCore 的相机引导。PCM 解码和播放使用平台或现有 Python 实现。
+  RangingManager 获取 BLE CS 距离。PCM 解码和播放使用平台或现有 Python 实现。
 
 “蓝牙 6.0”不等于手机一定开放测距接口。这个库不改变系统支持情况，也不提供硬件
-直接测角。AR 方向仍来自手机移动后的多点距离估算。没有公开 PPG 接口。
+直接测角。查找功能只提供距离，不估算方向或空间位置。没有公开 PPG 接口。
 
 ## 构建和接入
 
