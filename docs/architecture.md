@@ -1,5 +1,10 @@
 # Shared implementation and platform boundaries
 
+This repository maintains only the portable library and native bindings. The
+[Python SDK](https://github.com/ziloai/OpenZilo) and
+[Android SDK](https://github.com/ziloai/openzilo-android) are peer repositories.
+Android SDK sources, Gradle builds, platform tests and examples live in the latter.
+
 The portable Rust library has no BLE stack, UI, filesystem, network, account or
 background-service policy. Its exported UniFFI records are transport-neutral.
 `prepare_request` defines command bodies; a transport sends complete encoded

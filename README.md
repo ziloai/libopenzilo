@@ -1,137 +1,42 @@
 # libopenzilo
 
-[中文](README.zh-CN.md) · MPL-2.0 · Rust core, Python binding, Android SDK
+[中文](README.zh-CN.md) · MPL-2.0
 
-A portable implementation of OpenZilo protocol v4, with Python bindings and an
-Android SDK. Applications use `libopenzilo` or `openzilo-sdk` to communicate with
-compatible devices and process their data.
+Portable OpenZilo protocol, device state machines, validation and data-processing
+algorithms in Rust, with native Python and Kotlin bindings.
 
-## Repository and artifacts
+## Repository boundaries
 
-| Part | Name / location | Responsibility |
-| --- | --- | --- |
-| Rust crate and native Python package | `libopenzilo`, `src/` | Protocol, state machines, validation and portable algorithms |
-| Generated Kotlin bindings | `com.zilo.libopenzilo` | UniFFI calls into the same Rust implementation |
-| Android SDK | `com.zilo:openzilo-sdk`, `android/sdk/` | GATT, OS clocks, Future/Flow and connection/resource management |
-| Consumer example | `android/sample/` | Minimal SDK integration |
+| Repository | Responsibility |
+| --- | --- |
+| **libopenzilo** | Rust core, UniFFI configuration, native bindings and core tests |
+| [OpenZilo](https://github.com/ziloai/OpenZilo) | Python BLE/asyncio SDK, CLI and Python examples |
+| [openzilo-android](https://github.com/ziloai/openzilo-android) | Android BLE/GATT SDK, Future/Flow, AAR/Maven, tests and example app |
 
-The Android SDK and Rust crate are built and packaged separately. Android classes
-are absent from Python wheels and desktop native libraries. The Bleak/asyncio SDK
-and CLI remain in OpenZilo. UI, pairing and OS ranging acquisition belong to the
-consuming application. The current local checkout is still named `OpenZiloCore/`;
-the repository and package are named `libopenzilo`.
+Python and Android are peer consumers of this library. Neither platform SDK is
+maintained here. UI, permissions, background execution and file I/O belong to SDK
+adapters or applications; this crate has no BLE stack or application runtime.
 
-```mermaid
-flowchart TB
-  R[Ring firmware / protocol v4] <--> P[Python: Bleak + asyncio]
-  R <--> A[Android: BluetoothGatt]
-  P <--> C[Rust core / UniFFI]
-  A <--> C
-  A --> S[Android SDK: futures + Flow]
-  S --> T[Applications]
-```
+The core covers protocol v4/CRC, capability admission, request recovery,
+recording state, normal/fast downloads and sink backpressure, live validation,
+IMU conversion/calibration and portable profiles, OP2C/Ogg/WAV export, distance
+validity, signed firmware verification and OTA transfer/running-version checks.
+Distance utilities validate supplied measurements; they do not acquire OS ranging
+measurements or estimate direction. No public PPG interface is provided.
 
-The core handles framing/CRC, capability admission, recording state and request
-recovery, normal/fast downloads and bounded sink transfers, live validation,
-IMU conversion/calibration and portable profiles, OP2C/Ogg/WAV export,
-distance validity, signed firmware bundles and OTA state.
-The Android SDK supplies serialized GATT writes, async requests, bounded events,
-cancellation, disconnect cleanup and high-level device operations.
+## Build and validate
 
-BLE discovery/permissions, OS connection policy, audio decoding/playback, Android
-Channel Sounding acquisition belongs to its platform adapter.
-The library does not enable CS on unsupported hardware or provide a direct
-angle measurement. Distance utilities validate application-supplied measurements;
-they do not estimate direction or position.
-No public PPG interface is provided.
-
-## Build
-
-Use the system package manager for JDK 21, the Android SDK manager for packages
-under `~/Android/Sdk`, the project Gradle Wrapper for Gradle, and
-`uv tool install maturin` for the Python build tool. Gradle caches belong in
-`~/.gradle`; Rust uses its ordinary Cargo home and the project `target/` directory.
-
-Requirements: Rust stable, Python 3.10+, JDK 21, Android SDK 36 / Build Tools
-36.0.0, NDK r28c or a compatible newer NDK. Gradle uses 8.13, AGP 8.13.0,
-Kotlin 2.2.21. Dependencies are pinned by `Cargo.lock` and the Android build files.
+Rust stable is required. Python packaging additionally needs Python 3.10+ and
+maturin; building this repository does not require a JDK, Android SDK or NDK.
 
 ```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-maturin build --release --out dist
-rustup target add aarch64-linux-android
-export JAVA_HOME=/usr/lib/jvm/java-21-openjdk # Linux / Arch example
-export ANDROID_HOME="$HOME/Android/Sdk"
-export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
-cd android
-./gradlew :sdk:testDebugUnitTest :sdk:assembleRelease :sample:assembleDebug
-./gradlew :sdk:publishReleasePublicationToMavenRepository
+maturin build --release --locked --out dist
 ```
 
-`preBuild` builds the Rust library and generates Kotlin bindings. An installed
-Gradle 8.13 can run the same commands. `tools/build_android.py --abi x86_64` or
-`--abi armeabi-v7a` can build additional installed Rust targets; the default
-artifact and sample ship **arm64-v8a only**, suitable for current physical phones.
-To package several ABIs together, install their Rust targets and pass
-`-PopenziloAbis=arm64-v8a,x86_64,armeabi-v7a` to Gradle. The `x86_64` ABI supports
-Android emulator builds. CI builds that AAR and Linux x86_64, Windows x86_64 and
-macOS arm64 wheels; those remote jobs must pass before claiming target support.
-
-Outputs: Python wheel in `dist/`, SDK AAR in `android/sdk/build/outputs/aar/`,
-example APK in `android/sample/build/outputs/apk/debug/`, and local Maven
-repository in `dist/maven/`. The Maven publication includes dependency metadata
-for JNA and Kotlin coroutines. A bare AAR alone does not embed these dependencies.
-The Maven repository can be copied or hosted by the application developer.
-
-## Use from Android
-
-Add the generated Maven repository and dependency:
-
-```kotlin
-// settings.gradle.kts
-// dependencyResolutionManagement.repositories {
-//     maven { url = uri("/absolute/path/to/OpenZiloCore/dist/maven") }
-//     google(); mavenCentral()
-// }
-// app/build.gradle.kts
-// implementation("com.zilo:openzilo-sdk:0.1.0")
-
-import com.zilo.sdk.OpenZiloDevice
-import com.zilo.sdk.awaitResult
-
-// Obtain BLUETOOTH_SCAN / BLUETOOTH_CONNECT permission on Android 12+.
-// On Android 11 and earlier, BLE scanning needs location permission/services.
-val ring = OpenZiloDevice.connect(context, bluetoothDevice).awaitResult()
-try {
-    val info = ring.getSystemInfo().awaitResult()
-    val caps = ring.protocol.discoverCapabilities().awaitResult()
-    val count = ring.protocol.audioCount().awaitResult()
-    println("${info.model}: $count recordings")
-} finally {
-    ring.close()
-}
-```
-
-Java uses `CompletableFuture`; Kotlin can use `awaitResult()` and `events()` Flow.
-See [API and lifecycle](docs/api.md) and the standalone
-[example app](android/sample/src/main/java/com/example/openzilo/MainActivity.kt).
-The SDK operates locally without an account or server. Firmware verification uses
-a trusted public key. The demo reads device information and capabilities.
-
-## Use from Python
-
-The existing `OpenZilo` SDK uses this sibling project for local uv development.
-Its distribution declares `libopenzilo>=0.1.0,<0.2`; installed packages resolve
-the published dependency without a sibling checkout. Existing public APIs remain
-compatible, with additional sink downloads and distance replay:
-
-```sh
-cd ../OpenZilo
-uv sync
-uv run python -m unittest discover -s tests -v
-```
-
-Or install the wheel directly for transport-independent core APIs:
+The Rust crate, Python distribution and Python import are named `libopenzilo`.
 
 ```python
 import libopenzilo as core
@@ -139,12 +44,22 @@ wire = core.encode_packet(0x0101, b"")
 assert core.decode_packet(wire).command == 0x0101
 ```
 
-The wheel is native to its build OS/architecture. Build separate wheels on each
-supported target before publishing; the current local build is Linux x86_64.
-Publish and validate the core wheels before distributing the dependent SDK.
-See [integration boundaries](docs/architecture.md) and [validation](docs/validation.md).
+Generate Kotlin bindings from the host library (Linux example):
 
-`library_info()` identifies the linked native core and its API contract/features.
-No native PCM decoder is bundled: `decode_opus_pcm()` returns typed `Unavailable`.
-Python retains its optional FFmpeg/PyAV backends. Ogg export preserves OP2C's
-zero pre-skip convention; it cannot reconstruct missing encoder delay metadata.
+```sh
+cargo build --locked --features cli
+cargo run --locked --features cli --bin uniffi-bindgen -- generate --library target/debug/liblibopenzilo.so --language kotlin --config uniffi.toml --out-dir build/bindings/kotlin --no-format
+```
+
+macOS uses `.dylib`; Windows uses `libopenzilo.dll`. Generated Kotlin records use
+`com.zilo.libopenzilo`. Android compilation and integration are maintained in the
+Android SDK repository, which pins a tested core revision.
+
+Wheels are native to their build OS/architecture. CI builds Linux x86_64, macOS
+arm64 and Windows x86_64 wheels, installs them and runs the native smoke check.
+Publish validated core wheels before the dependent Python SDK.
+
+See [native API](docs/api.md), [architecture](docs/architecture.md) and
+[validation](docs/validation.md). `library_info()` reports the linked library's
+version, API contract and available features. Native PCM decoding is unavailable
+in this build; platform SDKs may use their own optional decoders.

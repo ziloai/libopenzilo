@@ -1,4 +1,4 @@
-name: Validate SDK artifacts
+name: Validate core artifacts
 on:
   push:
   pull_request:
@@ -14,6 +14,13 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      - run: cargo build --locked --features cli
+      - name: Generate Kotlin bindings
+        run: cargo run --locked --features cli --bin uniffi-bindgen -- generate --library target/debug/liblibopenzilo.so --language kotlin --config uniffi.toml --out-dir build/bindings/kotlin --no-format
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-bindings
+          path: build/bindings/kotlin
   wheels:
     strategy:
       fail-fast: false
@@ -42,30 +49,3 @@ jobs:
         with:
           name: wheel-${{ matrix.os }}-${{ matrix.target }}
           path: dist/*.whl
-  android:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-      - uses: android-actions/setup-android@v3
-        with:
-          packages: platform-tools
-      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,x86_64-linux-android,armv7-linux-androideabi
-      - run: ./gradlew -PopenziloAbis=arm64-v8a,x86_64,armeabi-v7a :sdk:testDebugUnitTest :sdk:assembleRelease :sdk:publishReleasePublicationToMavenRepository :sample:assembleDebug
-        working-directory: android
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
-      - run: ./gradlew -PusePublishedSdk=true :sample:assembleDebug
-        working-directory: android
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
-      - uses: actions/upload-artifact@v4
-        with:
-          name: android-maven
-          path: dist/maven

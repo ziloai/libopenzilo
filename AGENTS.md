@@ -1,7 +1,7 @@
 # libopenzilo development boundaries
 
-This repository contains the portable Rust library and separately packaged Android
-adapter SDK. The local checkout may still be named `OpenZiloCore`.
+This repository contains the portable Rust library and native language bindings.
+The local checkout may still be named `OpenZiloCore`.
 
 - `src/`: platform-independent protocol, capability policy, operation state,
   validation, portable data processing and container/profile serialization.
@@ -10,12 +10,11 @@ adapter SDK. The local checkout may still be named `OpenZiloCore`.
   application background-service policy to the Rust crate.
 - `uniffi.toml`: generated native bindings. Crate/Python import: `libopenzilo`;
   Kotlin binding namespace: `com.zilo.libopenzilo`.
-- `android/sdk/`: Android BLE, GATT writes, Future/Flow bridges, OS clocks,
-  connection/resource cleanup and device-level SDK conveniences. Portable rules
-  and validation delegate to Rust. Artifact: `com.zilo:openzilo-sdk`.
-- `android/sample/`: minimal SDK consumer example.
-- Python BLE/asyncio adapters and CLI remain in the separate OpenZilo project.
-  UI, pairing and Android Ranging acquisition belong to consuming applications.
+- Android GATT, Future/Flow, platform clocks, SDK conveniences, examples and
+  platform integration tests belong to the separate `ziloai/openzilo-android`
+  repository. Never add Android SDK/Gradle/application sources here.
+- Python BLE/asyncio adapters, SDK and CLI remain in `ziloai/OpenZilo`.
+  Treat Python and Android as external consumers of the same shared library.
 
 Use `apply_patch` for source edits. Keep Chinese and English documentation aligned.
 Do not name internal test applications or present them as official products in
@@ -24,7 +23,6 @@ Never commit device identifiers, recordings, firmware, credentials, private keys
 or generated native/build artifacts. Keep synthetic fixtures clearly identified.
 
 Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings` and
-`cargo test --locked`. Build/install the wheel after binding changes. For Android,
-run `:sdk:testDebugUnitTest :sdk:assembleRelease :sample:assembleDebug` with the
-project wrapper and installed JDK/SDK/NDK. Verify the published Maven consumer.
+`cargo test --locked`. Build/install the wheel and generate Kotlin bindings after
+binding changes. Platform SDK acceptance runs in the respective SDK repositories.
 Hardware claims require separate device validation; tests are not hardware proof.
