@@ -206,13 +206,7 @@ pub fn parse_recording_config(body: Vec<u8>) -> Result<RecordingConfig> {
         gain_right_q8: r.u16()?,
         max_duration_ms: r.u16()?,
     };
-    // Firmware boots with legacy unlimited duration (0). Preserve that readback;
-    // outgoing settings remain bounded by recording_config_body and device limits.
-    let mut checked = c.clone();
-    if checked.max_duration_ms == 0 {
-        checked.max_duration_ms = 20;
-    }
-    recording_config_body(checked)?;
+    recording_config_body(c.clone())?;
     if r.bytes(18)?
         != [
             0x3e, 0x80, 0, 20, 3, 1, 1, 1, 0, 0, 0, 0x0b, 0xb9, 16, 0, 100, 8, 0,
@@ -275,6 +269,10 @@ pub fn parse_live_subscription(body: Vec<u8>) -> Result<bool> {
         return Err(invalid("Invalid live subscription response"));
     }
     Ok(v != 0)
+}
+#[uniffi::export]
+pub fn parse_audio_record_result(body: Vec<u8>) -> Result<u32> {
+    parse_audio_end(body)
 }
 #[uniffi::export]
 pub fn parse_audio_end(body: Vec<u8>) -> Result<u32> {

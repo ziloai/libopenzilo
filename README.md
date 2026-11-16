@@ -18,8 +18,11 @@ maintained here. UI, permissions, background execution and file I/O belong to SD
 adapters or applications; this crate has no BLE stack or application runtime.
 
 The core covers protocol v4/CRC, capability admission, request recovery,
-recording state, normal/fast downloads and sink backpressure, live validation,
-IMU conversion/calibration and portable profiles, OP2C/Ogg/WAV export, distance
+connection RSSI queries, recording state, normal/fast downloads, automatic saved-recording
+reception and sink backpressure, live validation,
+IMU conversion/calibration, static-window collection and portable profiles,
+packetized/raw Speex parsing,
+OP2C/Ogg/WAV export, distance
 validity, signed firmware verification and OTA transfer/running-version checks.
 Distance utilities validate supplied measurements; they do not acquire OS ranging
 measurements or estimate direction. No public PPG interface is provided.

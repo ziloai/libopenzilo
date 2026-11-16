@@ -238,6 +238,47 @@ fn malformed_start_ack_keeps_outcome_unknown_and_blocks_retry() {
 }
 
 #[test]
+fn rssi_invalid_reply_quarantines_until_reconnect() {
+    for body in [vec![0, 0], vec![0, 0, 128], vec![0, 7, 0]] {
+        let engine = DeviceEngine::new(8).unwrap();
+        let generation = engine.open().unwrap();
+        engine.begin(0x107, 0x108, vec![], 0, 10, None).unwrap();
+        let deliveries = engine
+            .receive(encode_packet(0x108, body).unwrap(), generation, 1)
+            .unwrap();
+        assert!(matches!(
+            deliveries[0],
+            Delivery::Failure {
+                code: ErrorCode::InvalidData,
+                ..
+            }
+        ));
+        assert!(engine.reconnect_required());
+        assert!(matches!(
+            engine.begin(0x107, 0x108, vec![], 2, 10, None),
+            Err(CoreError::OutcomeUnknown)
+        ));
+        engine.disconnect(generation);
+        let generation = engine.open().unwrap();
+        engine.begin(0x107, 0x108, vec![], 3, 10, None).unwrap();
+        let deliveries = engine
+            .receive(
+                encode_packet(0x108, vec![0, 0, 191]).unwrap(),
+                generation,
+                4,
+            )
+            .unwrap();
+        assert!(matches!(deliveries[0], Delivery::Response { .. }));
+        assert!(!engine.reconnect_required());
+        engine.begin(0x107, 0x108, vec![], 5, 10, None).unwrap();
+        let deliveries = engine
+            .receive(encode_packet(0x108, vec![0, 7]).unwrap(), generation, 6)
+            .unwrap();
+        assert!(matches!(deliveries[0], Delivery::Response { .. }));
+        assert!(!engine.reconnect_required());
+    }
+}
+#[test]
 fn deadline_progress_never_extends_total_and_timeout_latches() {
     let budget = DeadlineBudget::new(0, 10, 25).unwrap();
     assert_eq!(budget.remaining(5).unwrap(), 5);

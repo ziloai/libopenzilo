@@ -250,7 +250,10 @@ impl DeviceEngine {
                     Delivery::Response { request_id, packet } => {
                         if let Some(p) = s.pending.remove(request_id) {
                             // A normal response carrying a nonzero device status is a definite rejection.
-                            if packet.body.len() >= 2 && packet.body[..2] != [0, 0] {
+                            if p.command != 0x107
+                                && packet.body.len() >= 2
+                                && packet.body[..2] != [0, 0]
+                            {
                                 s.activity = restore_changed(s.activity.clone(), &p);
                             } else if let Err(e) = apply_response(&mut s, &p, packet) {
                                 self.session.quarantine(p.command, p.response);
@@ -330,6 +333,10 @@ fn apply_response(s: &mut EngineState, p: &PendingOperation, packet: &Packet) ->
                 reason: None,
             };
         }
+        0x107 => match parse_connection_rssi(packet.body.clone()) {
+            Ok(_) | Err(CoreError::Device { .. }) => (),
+            Err(e) => return Err(e),
+        },
         0x514 => {
             if parse_recording_config(packet.body.clone())? != config_from_body(&p.body)? {
                 return Err(invalid("Configuration readback differs"));

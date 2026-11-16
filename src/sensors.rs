@@ -16,6 +16,19 @@ pub struct ImuCalibration {
 pub fn validate_imu_parameters(c: ImuCalibration) -> Result<()> {
     check_calibration(&c)
 }
+#[uniffi::export]
+pub fn identity_imu_calibration(config: ImuConfig) -> Result<ImuCalibration> {
+    let calibration = ImuCalibration {
+        sensor_type: 0,
+        accel_range_g: config.accel_range_g,
+        gyro_range_dps: config.gyro_range_dps,
+        accel_bias_ug: vec![0; 3],
+        accel_scale_ppm: vec![1000000; 3],
+        gyro_bias_udps: vec![0; 3],
+    };
+    check_calibration(&calibration)?;
+    Ok(calibration)
+}
 fn check_calibration(c: &ImuCalibration) -> Result<()> {
     if c.sensor_type > 3
         || ![2, 4, 8, 16].contains(&c.accel_range_g)
@@ -398,6 +411,185 @@ pub fn validate_imu_calibration(
         max_gravity_error_g: gravity,
         max_gyro_residual_dps: gyro,
     })
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ImuCollectionPhase {
+    Ready,
+    Collecting,
+    Complete,
+    Failed,
+    Cancelled,
+}
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct ImuCollectionProgress {
+    pub phase: ImuCollectionPhase,
+    pub collected: u32,
+    pub target: u32,
+    pub settling_remaining: u32,
+}
+struct StaticCollection {
+    phase: ImuCollectionPhase,
+    settling_remaining: u32,
+    next_sequence: Option<u32>,
+    samples: Vec<ImuSample>,
+    window: Option<ImuStaticWindow>,
+    now: u64,
+    deadline: u64,
+}
+#[derive(uniffi::Object)]
+pub struct ImuStaticCollector {
+    state: Mutex<StaticCollection>,
+    config: ImuConfig,
+    target: u32,
+    timeout_ms: u64,
+    check_gyro: bool,
+}
+#[uniffi::export]
+impl ImuStaticCollector {
+    #[uniffi::constructor]
+    pub fn new(
+        config: ImuConfig,
+        duration_ms: u32,
+        settle_ms: u32,
+        check_gyro: bool,
+    ) -> Result<Self> {
+        if !(2000..=120000).contains(&duration_ms)
+            || settle_ms > 30000
+            || !(1..=1000).contains(&config.sample_rate_hz)
+        {
+            return Err(invalid("Invalid static IMU sampling duration or rate"));
+        }
+        identity_imu_calibration(config.clone())?;
+        let count = |duration| {
+            (u64::from(duration) * u64::from(config.sample_rate_hz)).div_ceil(1000) as u32
+        };
+        let target = count(duration_ms);
+        Ok(Self {
+            state: Mutex::new(StaticCollection {
+                phase: ImuCollectionPhase::Ready,
+                settling_remaining: count(settle_ms),
+                next_sequence: None,
+                samples: Vec::with_capacity(target as usize),
+                window: None,
+                now: 0,
+                deadline: 0,
+            }),
+            config,
+            target,
+            timeout_ms: u64::from(duration_ms) + u64::from(settle_ms) + 10000,
+            check_gyro,
+        })
+    }
+    pub fn begin(&self, now_ms: u64) -> Result<ImuCollectionProgress> {
+        let mut state = self.state.lock().unwrap();
+        if state.phase != ImuCollectionPhase::Ready {
+            return Err(invalid("Static IMU collection already started"));
+        }
+        let Some(deadline) = now_ms.checked_add(self.timeout_ms) else {
+            state.phase = ImuCollectionPhase::Failed;
+            return Err(invalid("Static IMU collection deadline overflow"));
+        };
+        state.now = now_ms;
+        state.deadline = deadline;
+        state.phase = ImuCollectionPhase::Collecting;
+        Ok(self.progress(&state))
+    }
+    pub fn accept(&self, batch: ImuBatch, now_ms: u64) -> Result<ImuCollectionProgress> {
+        let mut state = self.state.lock().unwrap();
+        if state.phase != ImuCollectionPhase::Collecting {
+            return Err(invalid("Static IMU collection is not active"));
+        }
+        let result = (|| {
+            Self::check_time(&mut state, now_ms)?;
+            if batch.frame_count == 0
+                || batch.frame_count as usize != batch.samples.len()
+                || batch.sample_size != 16
+                || state
+                    .next_sequence
+                    .is_some_and(|next| next != batch.sequence_start)
+            {
+                return Err(invalid("IMU sample sequence gap or invalid batch"));
+            }
+            state.next_sequence = Some(
+                batch
+                    .sequence_start
+                    .wrapping_add(u32::from(batch.frame_count)),
+            );
+            for sample in batch.samples {
+                if state.settling_remaining > 0 {
+                    state.settling_remaining -= 1;
+                } else if state.samples.len() < self.target as usize {
+                    state.samples.push(sample);
+                }
+            }
+            if state.samples.len() == self.target as usize {
+                state.window = Some(analyze_imu_static_window(
+                    std::mem::take(&mut state.samples),
+                    self.config.clone(),
+                    self.check_gyro,
+                )?);
+                state.phase = ImuCollectionPhase::Complete;
+            }
+            Ok(self.progress(&state))
+        })();
+        if result.is_err() {
+            state.phase = ImuCollectionPhase::Failed;
+            state.samples.clear();
+        }
+        result
+    }
+    pub fn tick(&self, now_ms: u64) -> Result<ImuCollectionProgress> {
+        let mut state = self.state.lock().unwrap();
+        if state.phase != ImuCollectionPhase::Collecting {
+            return Err(invalid("Static IMU collection is not active"));
+        }
+        if let Err(error) = Self::check_time(&mut state, now_ms) {
+            state.phase = ImuCollectionPhase::Failed;
+            state.samples.clear();
+            return Err(error);
+        }
+        Ok(self.progress(&state))
+    }
+    pub fn next_deadline(&self) -> Option<u64> {
+        let state = self.state.lock().unwrap();
+        (state.phase == ImuCollectionPhase::Collecting).then_some(state.deadline)
+    }
+    pub fn finish(&self) -> Result<ImuStaticWindow> {
+        let state = self.state.lock().unwrap();
+        if state.phase != ImuCollectionPhase::Complete {
+            return Err(invalid("Static IMU collection is not complete"));
+        }
+        Ok(state.window.as_ref().unwrap().clone())
+    }
+    pub fn cancel(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.phase = ImuCollectionPhase::Cancelled;
+        state.samples.clear();
+        state.window = None;
+    }
+}
+impl ImuStaticCollector {
+    fn progress(&self, state: &StaticCollection) -> ImuCollectionProgress {
+        ImuCollectionProgress {
+            phase: state.phase,
+            collected: state
+                .window
+                .as_ref()
+                .map_or(state.samples.len() as u32, |window| window.samples),
+            target: self.target,
+            settling_remaining: state.settling_remaining,
+        }
+    }
+    fn check_time(state: &mut StaticCollection, now_ms: u64) -> Result<()> {
+        if now_ms < state.now {
+            return Err(invalid("Monotonic clock moved backwards"));
+        }
+        state.now = now_ms;
+        if now_ms >= state.deadline {
+            return Err(CoreError::Timeout);
+        }
+        Ok(())
+    }
 }
 #[derive(Default)]
 struct Continuity {

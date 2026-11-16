@@ -183,6 +183,123 @@ pub fn export_wav_pcm(data: Vec<u8>, format: PcmFormat) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
+#[uniffi::export]
+pub fn is_wav(data: Vec<u8>) -> bool {
+    data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WAVE"
+}
+#[uniffi::export]
+pub fn is_ogg_speex(data: Vec<u8>) -> bool {
+    data.len() >= 36
+        && data.starts_with(b"OggS")
+        && data[..data.len().min(128)]
+            .windows(8)
+            .any(|w| w == b"Speex   ")
+}
+fn speex_block(data: &[u8], max_packet_size: usize) -> Option<Vec<Vec<u8>>> {
+    let mut packets = Vec::new();
+    let mut offset = 0;
+    while data.len() - offset >= 2 {
+        let size = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize;
+        if size == 0 {
+            break;
+        }
+        if size > max_packet_size || size > data.len() - offset - 2 {
+            return None;
+        }
+        offset += 2;
+        packets.push(data[offset..offset + size].to_vec());
+        offset += size;
+    }
+    if packets.is_empty() || data[offset..].iter().any(|b| ![0, 255].contains(b)) {
+        return None;
+    }
+    Some(packets)
+}
+#[uniffi::export]
+pub fn parse_packetized_speex_stream(
+    data: Vec<u8>,
+    max_packet_size: u32,
+    framed_block_size: Option<u32>,
+) -> Result<Option<Vec<Vec<u8>>>> {
+    if max_packet_size == 0 || framed_block_size == Some(0) {
+        return Err(invalid("Speex packet and block sizes must be positive"));
+    }
+    if let Some(packets) = speex_block(&data, max_packet_size as usize) {
+        return Ok(Some(packets));
+    }
+    let Some(block_size) = framed_block_size.map(|v| v as usize) else {
+        return Ok(None);
+    };
+    if data.len() <= block_size {
+        return Ok(None);
+    }
+    let mut packets = Vec::new();
+    for block in data.chunks(block_size) {
+        let Some(mut block_packets) = speex_block(block, max_packet_size as usize) else {
+            return Ok(None);
+        };
+        packets.append(&mut block_packets);
+    }
+    Ok(Some(packets))
+}
+#[uniffi::export]
+pub fn speex_packet_size(quality: u8, bits_size: Option<u32>) -> Result<u32> {
+    if let Some(size) = bits_size {
+        if size == 0 {
+            return Err(invalid("Speex packet size must be positive"));
+        }
+        return Ok(size);
+    }
+    Ok(match quality {
+        1 => 10,
+        2 => 15,
+        5 | 6 => 28,
+        7 | 8 => 38,
+        9 | 10 => 46,
+        _ => 20,
+    })
+}
+#[uniffi::export]
+pub fn split_raw_speex_packets(
+    data: Vec<u8>,
+    quality: u8,
+    bits_size: Option<u32>,
+) -> Result<Option<Vec<Vec<u8>>>> {
+    let size = speex_packet_size(quality, bits_size)? as usize;
+    if data.len() < size || !data.len().is_multiple_of(size) {
+        return Ok(None);
+    }
+    Ok(Some(data.chunks(size).map(|p| p.to_vec()).collect()))
+}
+#[uniffi::export]
+pub fn normalize_decoded_speex_pcm(
+    data: Vec<u8>,
+    packet_count: u32,
+    format: PcmFormat,
+) -> Result<Vec<u8>> {
+    let samples = match format.sample_rate_hz {
+        8000 => 160usize,
+        16000 => 320,
+        32000 => 640,
+        _ => return Err(invalid("Speex supports 8000, 16000 or 32000 Hz")),
+    };
+    if !(1..=2).contains(&format.channels) || ![8, 16].contains(&format.bit_depth) {
+        return Err(invalid("Unsupported PCM format"));
+    }
+    let frame_bytes = samples * format.channels as usize * (format.bit_depth as usize / 8);
+    let count = packet_count as usize;
+    if count == 0 || data.len() / frame_bytes <= count || !data.len().is_multiple_of(count) {
+        return Ok(data);
+    }
+    let decoded_stride = data.len() / count;
+    if !decoded_stride.is_multiple_of(frame_bytes) {
+        return Ok(data);
+    }
+    Ok(data
+        .chunks(decoded_stride)
+        .flat_map(|p| p[..frame_bytes].iter().copied())
+        .collect())
+}
 /// Stable optional entry point; no native decoder is bundled in this build.
 #[uniffi::export]
 pub fn decode_opus_pcm(_data: Vec<u8>) -> Result<Vec<u8>> {

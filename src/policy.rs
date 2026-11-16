@@ -54,6 +54,7 @@ pub fn feature_contracts() -> Vec<FeatureVersion> {
         "double_tap",
         "ota",
         "gesture",
+        "connection_rssi",
     ]
     .iter()
     .map(|name| FeatureVersion {
@@ -67,6 +68,7 @@ pub fn feature_contracts() -> Vec<FeatureVersion> {
 pub fn command_contract(command: u16) -> Option<CommandContract> {
     let (feature, enhanced, changes_state) = match command {
         0x101 | 0x105 | 0x301 | 0x303 => ("system", false, false),
+        0x107 => ("connection_rssi", true, false),
         0x402 => ("time_sync", false, false),
         0x501 | 0x503 | 0x506 | 0x507 | 0x509 => ("audio_files", false, false),
         0x50b => ("audio_files", false, true),
@@ -125,7 +127,7 @@ pub fn legacy_capability_profile(info: DeviceInfo, reason: String) -> Capability
             protocol_versions: vec![4],
             features: feature_contracts()
                 .into_iter()
-                .filter(|f| f.name != "gesture")
+                .filter(|f| !matches!(f.name.as_str(), "gesture" | "connection_rssi"))
                 .collect(),
             recording_limits: Some(RecordingLimits {
                 sample_rate_hz: 16000,
@@ -187,6 +189,10 @@ pub fn library_info() -> LibraryInfo {
             "ogg_opus".into(),
             "ogg_speex".into(),
             "wav_pcm".into(),
+            "connection_rssi".into(),
+            "speex_stream_parsing".into(),
+            "imu_static_collection".into(),
+            "auto_audio_transfer".into(),
         ],
     }
 }

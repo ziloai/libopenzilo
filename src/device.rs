@@ -29,6 +29,27 @@ pub fn parse_system_info(body: Vec<u8>) -> Result<DeviceInfo> {
         model: r.string()?,
     })
 }
+#[uniffi::export]
+pub fn parse_connection_rssi(body: Vec<u8>) -> Result<i8> {
+    let mut r = Reader::new(&body);
+    let code = r.u16()?;
+    if code != 0 {
+        if r.remaining() != 0 {
+            return Err(invalid("Invalid RSSI error response length"));
+        }
+        return Err(CoreError::Device { code });
+    }
+    if r.remaining() != 1 {
+        return Err(invalid("Invalid RSSI response length"));
+    }
+    let rssi = r.u8()? as i8;
+    if !(-127..=20).contains(&rssi) {
+        return Err(invalid(
+            "RSSI is unavailable or outside the supported range",
+        ));
+    }
+    Ok(rssi)
+}
 record!(FeatureVersion {
     name: String,
     major: u8,
@@ -62,6 +83,7 @@ pub(crate) fn feature_name(id: u16) -> String {
         9 => "ota",
         10 => "gesture",
         11 => "imu_calibration",
+        12 => "connection_rssi",
         _ => return format!("unknown_{id}"),
     }
     .into()
@@ -313,7 +335,7 @@ pub fn recording_config_body(c: RecordingConfig) -> Result<Vec<u8>> {
         || !(8000..=32000).contains(&c.bitrate)
         || c.gain_left_q8 > 1024
         || c.gain_right_q8 > 1024
-        || !(20..=60000).contains(&c.max_duration_ms)
+        || (c.max_duration_ms != 0 && !(20..=60000).contains(&c.max_duration_ms))
         || !c.max_duration_ms.is_multiple_of(20)
         || (c.disconnect_policy == 1 && c.output != 1 && c.output != 3)
     {
@@ -356,6 +378,16 @@ pub fn parse_recording_status(body: Vec<u8>) -> Result<RecordingStatus> {
         error_code: error,
         file_index: if saved != 0 { Some(index) } else { None },
     })
+}
+#[uniffi::export]
+pub fn sensor_gesture_name(gesture_id: u8) -> String {
+    match gesture_id {
+        0 => "idle".into(),
+        1 => "rotate_back".into(),
+        2 => "rotate_front".into(),
+        3 => "wave".into(),
+        value => format!("unknown({value})"),
+    }
 }
 record!(DeviceEvent{command:u16,timestamp:u32,timestamp_unit:String,gesture_id:Option<u8>});
 #[uniffi::export]
@@ -495,8 +527,8 @@ pub fn validate_recording_config(config: RecordingConfig, limits: RecordingLimit
         || c.gain_left_q8 > l.gain_max_q8
         || c.gain_right_q8 < l.gain_min_q8
         || c.gain_right_q8 > l.gain_max_q8
-        || c.max_duration_ms < l.duration_min_ms
-        || c.max_duration_ms > l.duration_max_ms
+        || (c.max_duration_ms != 0
+            && (c.max_duration_ms < l.duration_min_ms || c.max_duration_ms > l.duration_max_ms))
         || l.duration_step_ms == 0
         || !c.max_duration_ms.is_multiple_of(l.duration_step_ms)
         || (c.disconnect_policy != 0 && l.continue_outputs_mask & (1 << c.output) == 0)

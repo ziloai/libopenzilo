@@ -4,6 +4,7 @@ use crate::{invalid, recording_config_body, RecordingConfig, Result};
 pub enum DeviceRequest {
     SystemInfo,
     Capabilities,
+    ConnectionRssi,
     AudioCount,
     AudioInfo {
         file_index: u32,
@@ -61,6 +62,7 @@ pub fn prepare_request(request: DeviceRequest) -> Result<RequestSpec> {
     let (command, response, feature) = match request {
         DeviceRequest::SystemInfo => (0x101, Some(0x102), None),
         DeviceRequest::Capabilities => (0x105, Some(0x106), None),
+        DeviceRequest::ConnectionRssi => (0x107, Some(0x108), Some("connection_rssi")),
         DeviceRequest::AudioCount => (0x501, Some(0x502), Some("audio_files")),
         DeviceRequest::AudioInfo { file_index } => {
             body.extend([0, 0]);

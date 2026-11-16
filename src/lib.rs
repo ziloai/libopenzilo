@@ -5,6 +5,8 @@ mod streaming;
 pub use streaming::*;
 mod download;
 pub use download::*;
+mod auto_audio;
+pub use auto_audio::*;
 mod finding;
 pub use finding::*;
 mod audio;

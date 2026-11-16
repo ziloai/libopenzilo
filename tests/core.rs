@@ -167,6 +167,11 @@ fn imu_legacy_batch_and_signed_samples() {
 }
 #[test]
 fn command_golden_guards() {
+    let rssi = prepare_request(DeviceRequest::ConnectionRssi).unwrap();
+    assert_eq!(rssi.command, 0x107);
+    assert_eq!(rssi.response, Some(0x108));
+    assert!(rssi.body.is_empty());
+    assert_eq!(rssi.feature.as_deref(), Some("connection_rssi"));
     let r = prepare_request(DeviceRequest::AudioRead {
         file_index: 5,
         offset: 99,
@@ -205,6 +210,44 @@ fn live_sequence_and_verified_end() {
     assert!(v.accept(packet(0x510, data)).is_err());
 }
 #[test]
+fn connection_rssi_signed_range_and_strict_response() {
+    for value in [-127i8, -65, -1, 0, 20] {
+        assert_eq!(
+            parse_connection_rssi(vec![0, 0, value as u8]).unwrap(),
+            value
+        );
+    }
+    assert!(matches!(
+        parse_connection_rssi(vec![0, 7]),
+        Err(CoreError::Device { code: 7 })
+    ));
+    for body in [
+        vec![],
+        vec![0],
+        vec![0, 0],
+        vec![0, 0, 128],
+        vec![0, 0, 21],
+        vec![0, 0, 0, 0],
+        vec![0, 7, 0],
+    ] {
+        assert!(matches!(
+            parse_connection_rssi(body),
+            Err(CoreError::Invalid { .. })
+        ));
+    }
+    let feature = FeatureVersion {
+        name: "connection_rssi".into(),
+        major: 1,
+        minor: 0,
+    };
+    assert!(check_command_contract(0x107, vec![feature], CapabilitySource::Device, false).is_ok());
+    assert!(check_command_contract(0x107, vec![], CapabilitySource::Device, false).is_err());
+    assert!(check_command_contract(0x107, vec![], CapabilitySource::Unknown, false).is_err());
+    assert!(feature_contracts()
+        .iter()
+        .any(|f| f.name == "connection_rssi"));
+}
+#[test]
 fn capabilities_fixture() {
     let hex = include_str!("fixtures/capabilities-v1.hex");
     let h: String = hex
@@ -218,9 +261,170 @@ fn capabilities_fixture() {
         .step_by(2)
         .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
         .collect();
+    let mut b: Vec<u8> = b;
+    b.extend([1, 12, 0, 2, 1, 0]);
     let c = parse_capabilities(b).unwrap();
+    assert!(supports_feature(
+        c.features.clone(),
+        "connection_rssi".into(),
+        1,
+        0
+    ));
+    let legacy = legacy_capability_profile(
+        DeviceInfo {
+            firmware_version: "V2.001.0002.0001-prod-7fd1dfc9".into(),
+            system_time: 0,
+            audio_storage_total: 0,
+            audio_storage_available: 0,
+            battery_percent: 0,
+            battery_charging: false,
+            sn: String::new(),
+            cpuid: String::new(),
+            model: "Open Zilo".into(),
+        },
+        "synthetic legacy fixture".into(),
+    );
+    assert!(!legacy
+        .capabilities
+        .unwrap()
+        .features
+        .iter()
+        .any(|f| f.name == "connection_rssi"));
     assert!(supports_feature(c.features, "imu".into(), 2, 0));
     assert_eq!(c.recording_limits.unwrap().sample_rate_hz, 16000);
+}
+#[test]
+fn speex_packetized_raw_and_container_detection() {
+    let packets = vec![vec![1, 2, 3], vec![7; 255]];
+    let mut wire = Vec::new();
+    for packet in &packets {
+        wire.extend((packet.len() as u16).to_le_bytes());
+        wire.extend(packet);
+    }
+    wire.extend([0, 0, 255]);
+    assert_eq!(
+        parse_packetized_speex_stream(wire.clone(), 540, None).unwrap(),
+        Some(packets.clone())
+    );
+    assert!(parse_packetized_speex_stream(wire.clone(), 254, None)
+        .unwrap()
+        .is_none());
+    *wire.last_mut().unwrap() = 1;
+    assert!(parse_packetized_speex_stream(wire, 540, None)
+        .unwrap()
+        .is_none());
+    for bad in [vec![], vec![0, 0], vec![3, 0, 1], vec![255, 255]] {
+        assert!(parse_packetized_speex_stream(bad, 540, None)
+            .unwrap()
+            .is_none());
+    }
+    let mut block = vec![3, 0, 1, 2, 3];
+    block.resize(1026, 0);
+    let mut framed = block.clone();
+    framed.extend(&block);
+    assert!(parse_packetized_speex_stream(framed.clone(), 540, None)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        parse_packetized_speex_stream(framed.clone(), 540, Some(1026)).unwrap(),
+        Some(vec![vec![1, 2, 3]; 2])
+    );
+    framed.pop();
+    assert_eq!(
+        parse_packetized_speex_stream(framed, 540, Some(1026)).unwrap(),
+        Some(vec![vec![1, 2, 3]; 2])
+    );
+    assert!(parse_packetized_speex_stream(vec![], 0, None).is_err());
+    assert!(parse_packetized_speex_stream(vec![], 540, Some(0)).is_err());
+    for (quality, size) in [10, 15, 20, 20, 28, 28, 38, 38, 46, 46]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(speex_packet_size(quality as u8 + 1, None).unwrap(), size);
+        assert_eq!(
+            split_raw_speex_packets(vec![7; size as usize * 2], quality as u8 + 1, None)
+                .unwrap()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    assert_eq!(speex_packet_size(0, None).unwrap(), 20);
+    assert_eq!(speex_packet_size(3, Some(42)).unwrap(), 42);
+    assert!(split_raw_speex_packets(vec![0; 21], 3, None)
+        .unwrap()
+        .is_none());
+    assert!(split_raw_speex_packets(vec![0; 20], 3, Some(0)).is_err());
+    assert!(is_ogg_speex(export_ogg_speex(packets, 16000, 9).unwrap()));
+    assert!(!is_ogg_speex(vec![0; 100]));
+    assert!(is_wav(
+        export_wav_pcm(
+            vec![0; 640],
+            PcmFormat {
+                sample_rate_hz: 16000,
+                channels: 1,
+                bit_depth: 16
+            }
+        )
+        .unwrap()
+    ));
+    assert!(!is_wav(b"RIFF\0\0\0\0".to_vec()));
+}
+#[test]
+fn speex_decoded_pcm_keeps_first_frame_per_packet() {
+    let format = PcmFormat {
+        sample_rate_hz: 16000,
+        channels: 1,
+        bit_depth: 16,
+    };
+    let pcm = [vec![1; 640], vec![9; 640], vec![2; 640], vec![8; 640]].concat();
+    assert_eq!(
+        normalize_decoded_speex_pcm(pcm.clone(), 2, format.clone()).unwrap(),
+        [vec![1; 640], vec![2; 640]].concat()
+    );
+    assert_eq!(
+        normalize_decoded_speex_pcm(pcm.clone(), 0, format.clone()).unwrap(),
+        pcm
+    );
+    let short = vec![1; 600];
+    assert_eq!(
+        normalize_decoded_speex_pcm(short.clone(), 1, format.clone()).unwrap(),
+        short
+    );
+    let irregular = vec![1; 1500];
+    assert_eq!(
+        normalize_decoded_speex_pcm(irregular.clone(), 2, format.clone()).unwrap(),
+        irregular
+    );
+    assert!(normalize_decoded_speex_pcm(
+        vec![],
+        1,
+        PcmFormat {
+            sample_rate_hz: 0,
+            ..format
+        }
+    )
+    .is_err());
+}
+#[test]
+fn record_result_and_gesture_names() {
+    assert_eq!(
+        parse_audio_record_result(vec![0, 0, 0, 0, 0, 5]).unwrap(),
+        5
+    );
+    assert!(matches!(
+        parse_audio_record_result(vec![0, 7]),
+        Err(CoreError::Device { code: 7 })
+    ));
+    assert!(parse_audio_record_result(vec![0, 0, 0, 0, 0]).is_err());
+    assert!(parse_audio_record_result(vec![0, 0, 0, 0, 0, 5, 0]).is_err());
+    for (id, name) in ["idle", "rotate_back", "rotate_front", "wave"]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(sensor_gesture_name(id as u8), *name);
+    }
+    assert_eq!(sensor_gesture_name(255), "unknown(255)");
 }
 #[test]
 fn decoder_can_drain_after_rejected_frame() {
@@ -257,6 +461,17 @@ fn recording_config_respects_advertised_ranges() {
         duration_step_ms: 20,
     };
     validate_recording_config(c.clone(), l.clone()).unwrap();
+    let mut unlimited = c.clone();
+    unlimited.max_duration_ms = 0;
+    validate_recording_config(unlimited, l.clone()).unwrap();
+    let mut misaligned = c.clone();
+    misaligned.max_duration_ms = 21;
+    assert!(validate_recording_config(misaligned, l.clone()).is_err());
+    let mut below_min = c.clone();
+    below_min.max_duration_ms = 20;
+    let mut restricted = l.clone();
+    restricted.duration_min_ms = 40;
+    assert!(validate_recording_config(below_min, restricted).is_err());
     l.bitrate_max = 16000;
     assert!(validate_recording_config(c, l).is_err());
 }
@@ -270,12 +485,12 @@ fn audio_start_requests_preserve_reserved_field() {
     }
 }
 #[test]
-fn legacy_unlimited_config_is_readable_but_not_written() {
+fn unlimited_config_roundtrips_like_python_sdk() {
     let body = vec![
         0, 0, 1, 0, 0, 2, 0, 0, 0x7d, 0, 1, 0, 1, 0, 0, 0, 0x3e, 0x80, 0, 20, 3, 1, 1, 1, 0, 0, 0,
         0x0b, 0xb9, 16, 0, 100, 8, 0,
     ];
     let c = parse_recording_config(body).unwrap();
     assert_eq!(c.max_duration_ms, 0);
-    assert!(recording_config_body(c).is_err());
+    assert_eq!(&recording_config_body(c).unwrap()[12..], &[0, 0]);
 }
