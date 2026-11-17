@@ -27,6 +27,11 @@ validity, signed firmware verification and OTA transfer/running-version checks.
 Distance utilities validate supplied measurements; they do not acquire OS ranging
 measurements or estimate direction. No public PPG interface is provided.
 
+Stream decoding drops complete frames with invalid body CRC while preserving valid
+neighboring frames and pending requests. `DecodeBatch.dropped_crc_packets` and
+`DeviceEngine.take_dropped_crc_packets()` expose diagnostics; single-packet decoding
+still rejects CRC errors, and other malformed protocol data remains fatal to sessions.
+
 ## Build and validate
 
 Rust stable is required. Python packaging additionally needs Python 3.10+ and

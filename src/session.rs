@@ -49,6 +49,7 @@ struct State {
     events: VecDeque<Packet>,
     exclusive: Option<String>,
     quarantined: BTreeSet<u16>,
+    dropped_crc_packets: u64,
 }
 #[derive(uniffi::Object)]
 pub struct DeviceSession {
@@ -113,6 +114,7 @@ impl DeviceSession {
         s.events.clear();
         s.pending.clear();
         s.quarantined.clear();
+        s.dropped_crc_packets = 0;
         s.exclusive = None;
         self.decoder.clear();
         Ok(s.generation)
@@ -258,6 +260,9 @@ impl DeviceSession {
     pub fn take_events(&self) -> Vec<Packet> {
         self.state.lock().unwrap().events.drain(..).collect()
     }
+    pub fn take_dropped_crc_packets(&self) -> u64 {
+        std::mem::take(&mut self.state.lock().unwrap().dropped_crc_packets)
+    }
     pub fn acquire_exclusive(&self, owner: String) -> Result<()> {
         let mut s = self.state.lock().unwrap();
         if owner.is_empty() {
@@ -388,6 +393,9 @@ impl DeviceSession {
         }
         let mut out = expire(&mut s, now_ms);
         let batch = self.decoder.feed_batch(data);
+        s.dropped_crc_packets = s
+            .dropped_crc_packets
+            .saturating_add(u64::from(batch.dropped_crc_packets));
         let mut fault = batch
             .fault
             .map(|message| (crate::ErrorCode::InvalidData, message));

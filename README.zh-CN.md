@@ -23,6 +23,10 @@ OP2C/Ogg/WAV 导出、距离有效期、固件签名
 验证以及 OTA 传输和运行版本核对。距离接口处理调用方传入的观测，不采集系统测距
 数据，也不估算方向。没有公开 PPG 接口。
 
+流式解码丢弃正文 CRC 错误的完整帧，同时保留前后正常帧和待完成请求；
+`DecodeBatch.dropped_crc_packets` 和 `DeviceEngine.take_dropped_crc_packets()`
+提供丢包诊断。单包解码仍拒绝 CRC 错误，其他协议格式错误仍会终止会话。
+
 ## 构建和验证
 
 需要 Rust stable；构建 Python 包还需要 Python 3.10+ 和 maturin。

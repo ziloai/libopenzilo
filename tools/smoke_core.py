@@ -6,6 +6,12 @@ info = core.library_info()
 assert info.api_contract == 1 and len(info.build_id) == 64
 wire = core.encode_packet(0x101, b"")
 assert core.decode_packet(wire).command == 0x101
+bad = bytearray(core.encode_packet(0x605, b"corrupt"))
+bad[-1] ^= 1
+decoder = core.PacketDecoder()
+batch = decoder.feed_batch(wire + bytes(bad) + wire)
+assert batch.dropped_crc_packets == 1 and batch.fault is None
+assert [packet.command for packet in batch.packets] == [0x101, 0x101]
 assert core.command_contract(0x601).major == 2
 rssi = core.prepare_request(core.DeviceRequest.CONNECTION_RSSI())
 assert rssi.command == 0x107 and rssi.response == 0x108 and not rssi.body
@@ -32,5 +38,8 @@ auto_audio.cancel()
 assert core.identity_imu_calibration(core.ImuConfig(sample_rate_hz=100, accel_range_g=16, gyro_range_dps=2000)).sensor_type == 0
 engine = core.DeviceEngine(16)
 generation = engine.open()
+assert not engine.receive(bytes(bad), generation, 0)
+assert engine.take_dropped_crc_packets() == 1
+assert engine.take_dropped_crc_packets() == 0
 engine.disconnect(generation)
 print(f"libopenzilo {info.version} contract {info.api_contract}: wheel smoke passed")

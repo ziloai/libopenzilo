@@ -116,6 +116,25 @@ pub fn check_command_contract(
 }
 #[uniffi::export]
 pub fn legacy_capability_profile(info: DeviceInfo, reason: String) -> CapabilityProfile {
+    if info.firmware_version == "V2.001.0002.0000-prod-bccb2ffc" && info.model == "Open Zilo" {
+        return CapabilityProfile {
+            source: CapabilitySource::VerifiedLegacyProfile,
+            capabilities: Some(Capabilities {
+                firmware_version: info.firmware_version,
+                model: info.model,
+                board_target: "ring_dvt2/nrf54l15/cpuapp".into(),
+                build_id: "bccb2ffcbbe18cc63f2b5d4954432d2c7046fe56".into(),
+                boot_id: String::new(),
+                protocol_versions: vec![4],
+                features: feature_contracts()
+                    .into_iter()
+                    .filter(|f| f.name == "ota")
+                    .collect(),
+                recording_limits: None,
+            }),
+            reason: Some(reason),
+        };
+    }
     // Exact verified released build only; release strings are opaque identifiers.
     if info.firmware_version == "V2.001.0002.0001-prod-7fd1dfc9" && info.model == "Open Zilo" {
         let capabilities = Capabilities {

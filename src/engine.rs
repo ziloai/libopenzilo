@@ -193,6 +193,9 @@ impl DeviceEngine {
     pub fn take_events(&self) -> Vec<Packet> {
         self.session.take_events()
     }
+    pub fn take_dropped_crc_packets(&self) -> u64 {
+        self.session.take_dropped_crc_packets()
+    }
     pub fn interrupt_write(&self, generation: u64) {
         self.session.interrupt_write(generation);
     }
@@ -228,8 +231,15 @@ impl DeviceEngine {
         self.session.release_exclusive(owner)
     }
     pub fn require_ota_idle(&self) -> Result<()> {
-        let a = self.device_state();
-        if a.recording != ActivityState::Idle
+        let s = self.state.lock().unwrap();
+        let legacy_ota = s.profile.source == CapabilitySource::VerifiedLegacyProfile
+            && s.profile
+                .capabilities
+                .as_ref()
+                .is_some_and(|c| c.build_id == "bccb2ffcbbe18cc63f2b5d4954432d2c7046fe56");
+        let a = &s.activity;
+        // This legacy build has OTA but no recording-status command.
+        if (!legacy_ota && a.recording != ActivityState::Idle)
             || a.live != SubscriptionState::Disabled
             || a.imu != SubscriptionState::Disabled
         {

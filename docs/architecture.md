@@ -36,7 +36,9 @@ The default Android event channel has bounded buffers. Slow consumers fail
 explicitly. `DeviceEngine` delivers events directly to the host without duplicate
 native storage. Lower-level `DeviceSession.receive()` users must drain
 `take_events()`; `receive_direct()` is available for hosts with their own queues.
-Malformed frames produce a connection fault after all preceding valid deliveries;
+Body-CRC-invalid frames are consumed and dropped while valid neighbors and pending
+requests survive; hosts obtain warning counts with `take_dropped_crc_packets()`.
+Other malformed frames produce a connection fault after preceding valid deliveries;
 remaining requests are failed explicitly.
 Callbacks must be brief and must not block the session thread.
 

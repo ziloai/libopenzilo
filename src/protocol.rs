@@ -44,6 +44,20 @@ pub fn decode_packet(data: Vec<u8>) -> Result<Packet> {
     decode(&data)
 }
 fn decode(d: &[u8]) -> Result<Packet> {
+    let packet = parse_frame(d)?;
+    if !valid_body_crc(&packet) {
+        return Err(invalid(format!(
+            "Body CRC mismatch: expected 0x{:04X}, got 0x{:04X}",
+            packet.body_crc,
+            crc(&packet.body, 65535)
+        )));
+    }
+    Ok(packet)
+}
+fn valid_body_crc(packet: &Packet) -> bool {
+    packet.body.is_empty() || packet.body_crc == crc(&packet.body, 65535)
+}
+fn parse_frame(d: &[u8]) -> Result<Packet> {
     if d.len() < 11 {
         return Err(invalid(format!("Packet too short: {} bytes", d.len())));
     }
@@ -67,14 +81,6 @@ fn decode(d: &[u8]) -> Result<Packet> {
     }
     let sum = u16::from_be_bytes([d[9], d[10]]);
     let body = d[11..11 + n].to_vec();
-    if n > 0 {
-        let actual = crc(&body, 65535);
-        if sum != actual {
-            return Err(invalid(format!(
-                "Body CRC mismatch: expected 0x{sum:04X}, got 0x{actual:04X}"
-            )));
-        }
-    }
     Ok(Packet {
         command: u16::from_be_bytes([d[3], d[4]]),
         body,
@@ -86,6 +92,7 @@ fn decode(d: &[u8]) -> Result<Packet> {
 pub struct DecodeBatch {
     pub packets: Vec<Packet>,
     pub fault: Option<String>,
+    pub dropped_crc_packets: u32,
 }
 #[derive(uniffi::Object, Default)]
 pub struct PacketDecoder {
@@ -110,10 +117,11 @@ impl PacketDecoder {
             None => Ok(batch.packets),
         }
     }
-    /// Preserve valid frames preceding a malformed frame in the same notification.
+    /// Drop complete CRC-invalid frames without discarding their valid neighbors.
     pub fn feed_batch(&self, data: Vec<u8>) -> DecodeBatch {
         let mut b = self.buffer.lock().unwrap();
         let mut packets = Vec::new();
+        let mut dropped_crc_packets = 0u32;
         // Bounded chunks avoid allocating arbitrarily large incomplete frames.
         for part in data.chunks(MAX_BODY + 11).chain(std::iter::once(&[][..])) {
             b.extend(part);
@@ -136,18 +144,21 @@ impl PacketDecoder {
                     return DecodeBatch {
                         packets,
                         fault: Some(format!("Body too large: {n} bytes")),
+                        dropped_crc_packets,
                     };
                 }
                 if b.len() < 11 + n {
                     break;
                 }
                 let raw: Vec<u8> = b.drain(..11 + n).collect();
-                match decode(&raw) {
-                    Ok(p) => packets.push(p),
+                match parse_frame(&raw) {
+                    Ok(p) if valid_body_crc(&p) => packets.push(p),
+                    Ok(_) => dropped_crc_packets = dropped_crc_packets.saturating_add(1),
                     Err(e) => {
                         return DecodeBatch {
                             packets,
                             fault: Some(e.to_string()),
+                            dropped_crc_packets,
                         };
                     }
                 }
@@ -156,6 +167,7 @@ impl PacketDecoder {
         DecodeBatch {
             packets,
             fault: None,
+            dropped_crc_packets,
         }
     }
 }

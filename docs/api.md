@@ -27,6 +27,19 @@ notifications/write failures/disconnects and drives deadlines. Timeout/cancellat
 does not retract a device command. An ambiguous response slot is quarantined until
 reconnect. Structured failure codes and recovery actions are independent of UI text.
 
+`PacketDecoder.feed_batch()` consumes and drops complete frames whose body CRC is
+invalid, continuing through valid neighboring frames and preserving partial frames.
+`DecodeBatch.dropped_crc_packets` counts drops in that call, including when a later
+fatal fault occurs. `feed()` shares this recovery behavior but does not return the
+count; `decode_packet()` remains strict. Unsupported versions, oversized bodies and
+other protocol faults are not treated as recoverable CRC errors.
+
+`DeviceSession` and `DeviceEngine` keep the connection and pending requests alive
+across CRC drops. Their `take_dropped_crc_packets()` returns and clears the accumulated
+count since the previous call; opening a new connection resets it. Hosts may use this
+structured diagnostic for warnings without treating it as an event or connection
+fault, and stale-generation notifications do not affect it.
+
 Sink transfers request the next chunk only after host acceptance. Download success
 requires END acknowledgement; live data is provisional until verified END. OTA
 transfer completion awaits reboot and exact same-device running-version verification.

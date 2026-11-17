@@ -248,6 +248,37 @@ fn connection_rssi_signed_range_and_strict_response() {
         .any(|f| f.name == "connection_rssi"));
 }
 #[test]
+fn legacy_0000_admits_only_ota_for_the_exact_identity() {
+    let mut info = DeviceInfo {
+        firmware_version: "V2.001.0002.0000-prod-bccb2ffc".into(),
+        system_time: 0,
+        audio_storage_total: 0,
+        audio_storage_available: 0,
+        battery_percent: 0,
+        battery_charging: false,
+        sn: String::new(),
+        cpuid: String::new(),
+        model: "Open Zilo".into(),
+    };
+    let profile = legacy_capability_profile(info.clone(), "synthetic legacy fixture".into());
+    assert_eq!(profile.source, CapabilitySource::VerifiedLegacyProfile);
+    let caps = profile.capabilities.unwrap();
+    assert_eq!(caps.board_target, "ring_dvt2/nrf54l15/cpuapp");
+    assert_eq!(caps.features.len(), 1);
+    assert!(check_command_contract(1005, caps.features.clone(), profile.source, false).is_ok());
+    assert!(check_command_contract(0x51a, caps.features, profile.source, false).is_err());
+    assert!(caps.recording_limits.is_none());
+    info.model = "Other ring".into();
+    assert!(legacy_capability_profile(info.clone(), String::new())
+        .capabilities
+        .is_none());
+    info.model = "Open Zilo".into();
+    info.firmware_version = "V2.001.0002.0000-prod-deadbeef".into();
+    assert!(legacy_capability_profile(info, String::new())
+        .capabilities
+        .is_none());
+}
+#[test]
 fn capabilities_fixture() {
     let hex = include_str!("fixtures/capabilities-v1.hex");
     let h: String = hex
@@ -427,13 +458,67 @@ fn record_result_and_gesture_names() {
     assert_eq!(sensor_gesture_name(255), "unknown(255)");
 }
 #[test]
-fn decoder_can_drain_after_rejected_frame() {
-    let d = PacketDecoder::new();
-    let mut bad = encode_packet(1, vec![1]).unwrap();
-    bad[11] ^= 1;
-    bad.extend(encode_packet(2, vec![]).unwrap());
-    assert!(d.feed(bad).is_err());
-    assert_eq!(d.feed(vec![]).unwrap()[0].command, 2);
+fn crc_invalid_stream_frame_is_dropped_with_neighbors_at_every_split() {
+    let first = encode_packet(1, b"first".to_vec()).unwrap();
+    let last = encode_packet(2, b"last".to_vec()).unwrap();
+    let mut bad = encode_packet(3, encode_packet(9, b"embedded magic".to_vec()).unwrap()).unwrap();
+    *bad.last_mut().unwrap() ^= 1;
+    assert!(decode_packet(bad.clone()).is_err());
+    let wire = [first, bad.clone(), last].concat();
+    for split in 0..=wire.len() {
+        let decoder = PacketDecoder::new();
+        let a = decoder.feed_batch(wire[..split].to_vec());
+        let b = decoder.feed_batch(wire[split..].to_vec());
+        assert!(a.fault.is_none() && b.fault.is_none());
+        assert_eq!(a.dropped_crc_packets + b.dropped_crc_packets, 1);
+        let packets = [a.packets, b.packets].concat();
+        assert_eq!(
+            packets.iter().map(|p| p.command).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(packets[0].body, b"first");
+        assert_eq!(packets[1].body, b"last");
+        assert_eq!(decoder.buffer_len(), 0);
+    }
+    let decoder = PacketDecoder::new();
+    for byte in wire {
+        assert!(decoder.feed(vec![byte]).is_ok());
+    }
+    assert_eq!(decoder.buffer_len(), 0);
+    let decoder = PacketDecoder::new();
+    assert!(decoder.feed(bad).unwrap().is_empty());
+    assert_eq!(
+        decoder.feed(encode_packet(2, vec![]).unwrap()).unwrap()[0].command,
+        2
+    );
+}
+#[test]
+fn crc_drop_waits_for_complete_frame_and_counts_each_drop() {
+    let mut bad = encode_packet(3, b"corrupted".to_vec()).unwrap();
+    *bad.last_mut().unwrap() ^= 1;
+    let decoder = PacketDecoder::new();
+    let a = decoder.feed_batch(bad[..bad.len() - 1].to_vec());
+    assert_eq!(a.dropped_crc_packets, 0);
+    assert!(a.fault.is_none());
+    assert_eq!(decoder.buffer_len(), bad.len() as u64 - 1);
+    let b = decoder.feed_batch([&bad[bad.len() - 1..], bad.as_slice()].concat());
+    assert_eq!(b.dropped_crc_packets, 2);
+    assert!(b.packets.is_empty() && b.fault.is_none());
+    assert_eq!(decoder.buffer_len(), 0);
+}
+#[test]
+fn crc_recovery_does_not_hide_other_protocol_faults() {
+    let mut bad_crc = encode_packet(3, vec![1]).unwrap();
+    bad_crc[11] ^= 1;
+    let mut version = encode_packet(1, vec![1]).unwrap();
+    version[2] = 5;
+    for bad in [version, vec![63, 0, 4, 1, 1, 255, 255, 255, 255, 0, 0]] {
+        let decoder = PacketDecoder::new();
+        let batch = decoder.feed_batch([bad_crc.clone(), bad].concat());
+        assert!(batch.fault.is_some());
+        assert_eq!(batch.dropped_crc_packets, 1);
+        assert!(batch.packets.is_empty());
+    }
 }
 #[test]
 fn recording_config_respects_advertised_ranges() {

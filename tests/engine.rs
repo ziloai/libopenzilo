@@ -22,11 +22,10 @@ fn frame(offset: u32, data: &[u8], end: bool) -> Packet {
     )
 }
 #[test]
-fn valid_delivery_survives_following_bad_crc_or_error_packet() {
-    for bad in [
-        vec![63, 0, 4, 1, 2, 0, 0, 0, 1, 0, 0, 1],
-        encode_packet(0x1ff, vec![0]).unwrap(),
-    ] {
+fn valid_delivery_survives_following_fatal_protocol_error() {
+    let mut unsupported = encode_packet(1, vec![]).unwrap();
+    unsupported[2] = 5;
+    for bad in [unsupported, encode_packet(0x1ff, vec![0]).unwrap()] {
         let s = DeviceSession::new(8).unwrap();
         let g = s.open().unwrap();
         let a = s.begin(1, 2, vec![], 0, 10, None).unwrap();
@@ -41,6 +40,80 @@ fn valid_delivery_survives_following_bad_crc_or_error_packet() {
         assert!(matches!(result.last(), Some(Delivery::Fault { .. })));
         assert!(s.begin(1, 2, vec![], 2, 10, None).is_err());
     }
+}
+#[test]
+fn crc_drop_preserves_pending_requests_events_and_connection_at_every_split() {
+    let mut bad = encode_packet(0x605, b"corrupt".to_vec()).unwrap();
+    *bad.last_mut().unwrap() ^= 1;
+    let wire = [
+        encode_packet(0x605, b"before".to_vec()).unwrap(),
+        bad,
+        encode_packet(0x605, b"after".to_vec()).unwrap(),
+        encode_packet(0x108, vec![0, 0, 191]).unwrap(),
+    ]
+    .concat();
+    for split in 0..=wire.len() {
+        for buffered in [false, true] {
+            let session = DeviceSession::new(8).unwrap();
+            let generation = session.open().unwrap();
+            let request = session.begin(0x107, 0x108, vec![], 0, 100, None).unwrap();
+            let receive = |data| {
+                if buffered {
+                    session.receive(data, generation, 1).unwrap()
+                } else {
+                    session.receive_direct(data, generation, 1).unwrap()
+                }
+            };
+            let mut deliveries = receive(wire[..split].to_vec());
+            deliveries.extend(receive(wire[split..].to_vec()));
+            assert_eq!(deliveries.len(), 3);
+            assert!(
+                matches!(&deliveries[0], Delivery::Event { packet } if packet.body == b"before")
+            );
+            assert!(
+                matches!(&deliveries[1], Delivery::Event { packet } if packet.body == b"after")
+            );
+            assert!(
+                matches!(&deliveries[2], Delivery::Response { request_id, packet } if *request_id == request.id && packet.command == 0x108)
+            );
+            assert_eq!(session.take_dropped_crc_packets(), 1);
+            assert_eq!(session.take_dropped_crc_packets(), 0);
+            assert_eq!(session.take_events().len(), if buffered { 2 } else { 0 });
+            assert!(session.begin(0x107, 0x108, vec![], 2, 100, None).is_ok());
+            assert!(!session.reconnect_required());
+        }
+    }
+}
+#[test]
+fn crc_diagnostic_is_connection_scoped_and_engine_does_not_fail_pending() {
+    let engine = DeviceEngine::new(8).unwrap();
+    let generation = engine.open().unwrap();
+    let request = engine.begin(0x107, 0x108, vec![], 0, 100, None).unwrap();
+    let mut bad = encode_packet(0x108, vec![0, 0, 191]).unwrap();
+    *bad.last_mut().unwrap() ^= 1;
+    assert!(engine
+        .receive(bad.clone(), generation + 1, 1)
+        .unwrap()
+        .is_empty());
+    assert_eq!(engine.take_dropped_crc_packets(), 0);
+    assert!(engine
+        .receive(bad.clone(), generation, 1)
+        .unwrap()
+        .is_empty());
+    assert_eq!(engine.take_dropped_crc_packets(), 1);
+    assert_eq!(engine.next_deadline(), Some(100));
+    let result = engine
+        .receive(
+            encode_packet(0x108, vec![0, 0, 191]).unwrap(),
+            generation,
+            2,
+        )
+        .unwrap();
+    assert!(matches!(result[0], Delivery::Response { request_id, .. } if request_id == request.id));
+    engine.receive(bad, generation, 3).unwrap();
+    engine.disconnect(generation);
+    engine.open().unwrap();
+    assert_eq!(engine.take_dropped_crc_packets(), 0);
 }
 #[test]
 fn late_reply_cannot_complete_a_retry_and_generation_rejects_old_callbacks() {
@@ -64,6 +137,41 @@ fn late_reply_cannot_complete_a_retry_and_generation_rejects_old_callbacks() {
     assert!(
         matches!(s.receive_direct(encode_packet(0x517,vec![]).unwrap(),next,12).unwrap()[0],Delivery::Response {request_id,..} if request_id==t.id)
     );
+}
+#[test]
+fn legacy_0000_can_acquire_ota_without_recording_status_and_keeps_exclusion() {
+    let e = DeviceEngine::new(8).unwrap();
+    let g = e.open().unwrap();
+    let mut info = DeviceInfo {
+        firmware_version: "V2.001.0002.0000-prod-bccb2ffc".into(),
+        model: "Open Zilo".into(),
+        system_time: 0,
+        audio_storage_total: 0,
+        audio_storage_available: 0,
+        battery_percent: 100,
+        battery_charging: false,
+        sn: String::new(),
+        cpuid: String::new(),
+    };
+    e.use_legacy_profile(info.clone(), "synthetic legacy fixture".into());
+    e.check_access(1005, false).unwrap();
+    e.acquire_operation(ExclusiveOperation::FirmwareUpdate, "ota".into())
+        .unwrap();
+    assert!(e
+        .acquire_operation(ExclusiveOperation::FirmwareUpdate, "other".into())
+        .is_err());
+    assert!(e.begin(0x101, 0x102, vec![], 0, 10, None).is_err());
+    e.release_exclusive("ota".into()).unwrap();
+    e.disconnect(g);
+    e.open().unwrap();
+    assert!(e
+        .acquire_operation(ExclusiveOperation::FirmwareUpdate, "ota".into())
+        .is_err());
+    info.firmware_version = "V2.001.0002.0001-prod-7fd1dfc9".into();
+    e.use_legacy_profile(info, "synthetic legacy fixture".into());
+    assert!(e
+        .acquire_operation(ExclusiveOperation::FirmwareUpdate, "ota".into())
+        .is_err());
 }
 #[test]
 fn recording_state_distinguishes_unknown_finalizing_and_idle() {
