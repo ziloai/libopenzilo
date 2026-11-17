@@ -72,7 +72,10 @@ pub fn inspect_firmware_bundle(
         let mut f = archive
             .by_index(i)
             .map_err(|_| invalid("Invalid firmware ZIP"))?;
-        let name = f.name().to_string();
+        let name = f
+            .name()
+            .map_err(|_| invalid("Invalid firmware ZIP member"))?
+            .to_string();
         let limit = match name.as_str() {
             "manifest.json" => 16384,
             "manifest.sig" => 80,
