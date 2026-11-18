@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,12 +22,30 @@ jobs:
           name: kotlin-bindings
           path: build/bindings/kotlin
   wheels:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-22.04' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          args: --release --locked --out dist
+          manylinux: auto
+      - run: python -m pip install --no-index --find-links dist libopenzilo
+      - run: python tools/smoke_core.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-linux-x86_64
+          path: dist/*.whl
+
+  wheels-hosted:
+    if: vars.HOSTED_CI == 'true'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
-            target: x86_64
           - os: macos-14
             target: aarch64
           - os: windows-2022
