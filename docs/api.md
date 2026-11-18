@@ -15,7 +15,7 @@
 | Live audio | `LiveValidator` and typed START/DATA/END events |
 | IMU | Raw/physical batches, `ImuContinuity`, `identity_imu_calibration`, `ImuStaticCollector`, calibration and validation functions |
 | Profiles | Profile parsing, serialization and device/source binding checks |
-| Audio export | OP2C, Ogg Opus/Speex, PCM WAV; optional decoder availability |
+| Audio | OP2C, Ogg Opus/Speex, PCM WAV, ring Opus-to-PCM decoding and aligned dual-mic suppression |
 | Legacy Speex | `parse_packetized_speex_stream`, `split_raw_speex_packets`, `speex_packet_size`, `normalize_decoded_speex_pcm`, `is_wav`, `is_ogg_speex` |
 | Device events | `parse_audio_record_result` (050A saved file index), `parse_device_event`, `sensor_gesture_name` |
 | Distance | `DistanceTracker`, observations, quality and expiry states |

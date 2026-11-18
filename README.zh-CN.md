@@ -27,6 +27,14 @@ OP2C/Ogg/WAV 导出、距离有效期、固件签名
 `DecodeBatch.dropped_crc_packets` 和 `DeviceEngine.take_dropped_crc_packets()`
 提供丢包诊断。单包解码仍拒绝 CRC 错误，其他协议格式错误仍会终止会话。
 
+## 戒指音频解码
+
+`RingOpusDecoder` 按顺序解码 20 ms 的戒指音频包，`decode_opus_pcm()` 解码 OP2C 录音。
+两者均输出 16 kHz PCM16LE，保留原始单声道或左右交错的双声道。对于语音已对齐的同步双麦，
+每条流使用一个 `DualMicDenoiser`，将完整的 20 ms 帧降噪并转换为单声道。这是基础算法，
+按双麦差异衰减噪声，不负责通道对齐，也不能去除两路共有的噪声。解码器使用纯 Rust 的
+[opus1](LICENSE-opus1)，分发二进制时须保留其许可声明。
+
 ## 多戒指
 
 `RingBindings` 是可选接口，现有 `DeviceEngine` 和 `DeviceSession` 调用方无需修改。

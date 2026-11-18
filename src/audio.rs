@@ -300,10 +300,127 @@ pub fn normalize_decoded_speex_pcm(
         .flat_map(|p| p[..frame_bytes].iter().copied())
         .collect())
 }
-/// Stable optional entry point; no native decoder is bundled in this build.
+const RING_AUDIO_RATE: u32 = 16_000;
+const RING_FRAME_SAMPLES: usize = 320;
+
+#[derive(uniffi::Object)]
+pub struct RingOpusDecoder {
+    channels: u16,
+    decoder: std::sync::Mutex<opus1::OpusDecoder>,
+}
+
 #[uniffi::export]
-pub fn decode_opus_pcm(_data: Vec<u8>) -> Result<Vec<u8>> {
-    Err(CoreError::Unavailable {
-        detail: "opus_pcm_decoder".into(),
-    })
+impl RingOpusDecoder {
+    #[uniffi::constructor]
+    pub fn new(channels: u16) -> Result<Self> {
+        let layout = match channels {
+            1 => opus1::Channels::Mono,
+            2 => opus1::Channels::Stereo,
+            _ => return Err(invalid("Ring Opus requires one or two channels")),
+        };
+        let decoder = opus1::OpusDecoder::new(opus1::SampleRate::Hz16000, layout)
+            .map_err(|err| invalid(format!("Could not initialize Opus decoder: {err}")))?;
+        Ok(Self {
+            channels,
+            decoder: std::sync::Mutex::new(decoder),
+        })
+    }
+
+    pub fn format(&self) -> PcmFormat {
+        PcmFormat {
+            sample_rate_hz: RING_AUDIO_RATE,
+            channels: self.channels,
+            bit_depth: 16,
+        }
+    }
+
+    /// Decode one in-order ring packet to 20 ms of PCM16LE, interleaved L/R for stereo.
+    pub fn decode_packet(&self, packet: Vec<u8>) -> Result<Vec<u8>> {
+        validate_opus(&packet, self.channels)?;
+        let mut output = [0i16; RING_FRAME_SAMPLES * 2];
+        let mut decoder = self.decoder.lock().unwrap();
+        let count = decoder
+            .decode_i16(
+                &packet,
+                RING_FRAME_SAMPLES,
+                &mut output[..RING_FRAME_SAMPLES * usize::from(self.channels)],
+            )
+            .map_err(|err| invalid(format!("Invalid Opus payload: {err}")))?;
+        if count != RING_FRAME_SAMPLES {
+            return Err(invalid("Opus decoder returned an unexpected sample count"));
+        }
+        Ok(output[..count * usize::from(self.channels)]
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect())
+    }
+}
+
+/// Decode an OP2C recording to 16 kHz PCM16LE without changing its channel count.
+#[uniffi::export]
+pub fn decode_opus_pcm(data: Vec<u8>) -> Result<Vec<u8>> {
+    let recording = parse_opus_recording(data)?;
+    let decoder = RingOpusDecoder::new(recording.channels)?;
+    let mut pcm = Vec::new();
+    for packet in recording.packets {
+        pcm.extend(decoder.decode_packet(packet)?);
+    }
+    Ok(pcm)
+}
+
+#[derive(uniffi::Object)]
+pub struct DualMicDenoiser {
+    gain: std::sync::Mutex<Option<f32>>,
+}
+
+#[uniffi::export]
+impl DualMicDenoiser {
+    #[uniffi::constructor]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Process whole 20 ms frames of synchronized 16 kHz stereo PCM16LE into mono PCM16LE.
+    pub fn process(&self, pcm: Vec<u8>) -> Result<Vec<u8>> {
+        if !pcm.len().is_multiple_of(RING_FRAME_SAMPLES * 4) {
+            return Err(invalid(
+                "Dual-mic input must contain whole 20 ms stereo PCM16LE frames",
+            ));
+        }
+        let mut result = Vec::with_capacity(pcm.len() / 2);
+        let mut previous_gain = self.gain.lock().unwrap();
+        for frame in pcm.as_chunks::<{ RING_FRAME_SAMPLES * 4 }>().0 {
+            let mut mid = [0f32; RING_FRAME_SAMPLES];
+            let mut mid_energy = 0f32;
+            let mut side_energy = 0f32;
+            for (index, pair) in frame.as_chunks::<4>().0.iter().enumerate() {
+                let left = f32::from(i16::from_le_bytes([pair[0], pair[1]]));
+                let right = f32::from(i16::from_le_bytes([pair[2], pair[3]]));
+                mid[index] = (left + right) * 0.5;
+                let side = (left - right) * 0.5;
+                mid_energy += mid[index] * mid[index];
+                side_energy += side * side;
+            }
+            // The side channel estimates noise only when the desired signal is aligned in both mics.
+            let target = (1.0 - side_energy / mid_energy.max(1.0))
+                .clamp(0.25, 1.0)
+                .sqrt();
+            let start = previous_gain.unwrap_or(target);
+            for (index, sample) in mid.into_iter().enumerate() {
+                let gain =
+                    start + (target - start) * (index + 1) as f32 / RING_FRAME_SAMPLES as f32;
+                result.extend(((sample * gain).round() as i16).to_le_bytes());
+            }
+            *previous_gain = Some(target);
+        }
+        Ok(result)
+    }
+}
+
+impl Default for DualMicDenoiser {
+    fn default() -> Self {
+        Self {
+            gain: std::sync::Mutex::new(None),
+        }
+    }
 }

@@ -483,6 +483,7 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 name = "libopenzilo"
 version = "0.1.0"
 dependencies = [
+ "opus1",
  "p256",
  "regex",
  "serde",
@@ -551,6 +552,12 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "opus1"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8371789de09e00d6805166461224f024848c1fd155c6df28da8c19eebcc3650d"
 
 [[package]]
 name = "p256"

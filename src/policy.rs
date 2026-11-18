@@ -206,6 +206,8 @@ pub fn library_info() -> LibraryInfo {
             "signed_ota".into(),
             "imu_calibration_v1".into(),
             "ogg_opus".into(),
+            "opus_pcm_decoder".into(),
+            "dual_mic_denoise".into(),
             "ogg_speex".into(),
             "wav_pcm".into(),
             "connection_rssi".into(),

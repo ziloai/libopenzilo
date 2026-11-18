@@ -393,6 +393,6 @@ fn ogg_granules_and_wav_units_are_consistent() {
     assert!(export_ogg_speex(vec![vec![0]], 44100, 1).is_err());
     assert!(matches!(
         decode_opus_pcm(vec![]),
-        Err(CoreError::Unavailable { .. })
+        Err(CoreError::Invalid { .. })
     ));
 }

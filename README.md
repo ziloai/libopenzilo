@@ -32,6 +32,16 @@ neighboring frames and pending requests. `DecodeBatch.dropped_crc_packets` and
 `DeviceEngine.take_dropped_crc_packets()` expose diagnostics; single-packet decoding
 still rejects CRC errors, and other malformed protocol data remains fatal to sessions.
 
+## Ring audio decoding
+
+`RingOpusDecoder` decodes ordered 20 ms ring packets; `decode_opus_pcm()` decodes
+an OP2C recording. Both return 16 kHz PCM16LE, preserving mono or interleaved L/R
+stereo. For synchronized stereo with aligned speech, use one `DualMicDenoiser`
+per stream to convert complete 20 ms frames to mono. This baseline attenuates
+energy that differs between the mics; it does not align channels or remove noise
+common to both. The decoder uses pure Rust [opus1](LICENSE-opus1); include its
+notice when distributing binaries.
+
 ## Multiple rings
 
 `RingBindings` is optional; existing `DeviceEngine` and `DeviceSession` callers do
