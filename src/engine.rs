@@ -40,6 +40,20 @@ struct EngineState {
     profile: CapabilityProfile,
     activity: DeviceState,
     pending: BTreeMap<u64, PendingOperation>,
+    live_stream: Option<LiveValidator>,
+}
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct TimeSyncRequest {
+    generation: u64,
+    requested_at: u32,
+    received_at: u32,
+}
+#[derive(Clone, Debug, uniffi::Enum)]
+pub enum LiveStreamEvent {
+    Started { value: LiveStart },
+    Frame { value: LiveData },
+    Ended { value: LiveEnd },
+    Interrupted,
 }
 fn unknown_profile() -> CapabilityProfile {
     CapabilityProfile {
@@ -73,6 +87,7 @@ impl DeviceEngine {
                 profile: unknown_profile(),
                 activity: initial_state(),
                 pending: BTreeMap::new(),
+                live_stream: None,
             }),
         })
     }
@@ -84,10 +99,88 @@ impl DeviceEngine {
         s.profile = unknown_profile();
         s.activity = initial_state();
         s.pending.clear();
+        s.live_stream = None;
         Ok(generation)
     }
     pub fn profile(&self) -> CapabilityProfile {
         self.state.lock().unwrap().profile.clone()
+    }
+    pub fn finish_discovery(
+        &self,
+        generation: u64,
+        failure: Option<ErrorCode>,
+        device_code: Option<u16>,
+    ) -> Option<CapabilityProfile> {
+        let mut s = self.state.lock().unwrap();
+        if s.generation != Some(generation) {
+            return None;
+        }
+        match (failure, device_code) {
+            (None, _) if s.profile.source == CapabilitySource::Device => Some(s.profile.clone()),
+            (Some(ErrorCode::Timeout), _) | (Some(ErrorCode::DeviceRejected), Some(5))
+                if s.profile.source == CapabilitySource::Unknown =>
+            {
+                let info = s.info.clone()?;
+                s.profile = legacy_capability_profile(
+                    info,
+                    "Capability query unavailable; exact verified legacy profiles only".into(),
+                );
+                Some(s.profile.clone())
+            }
+            _ => None,
+        }
+    }
+    pub fn capture_time_sync(
+        &self,
+        packet: Packet,
+        generation: u64,
+        received_at: u32,
+    ) -> Result<Option<TimeSyncRequest>> {
+        if packet.command != 0x401 || self.state.lock().unwrap().generation != Some(generation) {
+            return Ok(None);
+        }
+        Ok(Some(TimeSyncRequest {
+            generation,
+            requested_at: parse_time_request(packet.body)?,
+            received_at,
+        }))
+    }
+    pub fn prepare_time_sync_reply(
+        &self,
+        request: TimeSyncRequest,
+        send_time: u32,
+    ) -> Result<Vec<u8>> {
+        let s = self.state.lock().unwrap();
+        if s.generation != Some(request.generation) {
+            return Err(CoreError::Disconnected);
+        }
+        let spec = prepare_request(DeviceRequest::TimeReply {
+            request_time: request.requested_at,
+            response_time: request.received_at,
+            send_time,
+        })?;
+        self.session.prepare_send(spec.command, spec.body, None)
+    }
+    pub fn accept_live_event(&self, packet: Packet, generation: u64) -> Option<LiveStreamEvent> {
+        let mut s = self.state.lock().unwrap();
+        if s.generation != Some(generation) || !(0x50f..=0x511).contains(&packet.command) {
+            return None;
+        }
+        if packet.command == 0x50f && s.live_stream.is_none() {
+            s.live_stream = Some(LiveValidator::new());
+        }
+        match s.live_stream.as_ref()?.accept(packet) {
+            Ok(LiveEvent::Start { value }) => Some(LiveStreamEvent::Started { value }),
+            Ok(LiveEvent::Data { value }) => Some(LiveStreamEvent::Frame { value }),
+            Ok(LiveEvent::End { value }) => {
+                s.live_stream = None;
+                Some(LiveStreamEvent::Ended { value })
+            }
+            Err(_) => {
+                s.live_stream = None;
+                Some(LiveStreamEvent::Interrupted)
+            }
+        }
     }
     pub fn device_state(&self) -> DeviceState {
         self.state.lock().unwrap().activity.clone()
@@ -209,6 +302,7 @@ impl DeviceEngine {
         s.profile = unknown_profile();
         s.info = None;
         s.activity = initial_state();
+        s.live_stream = None;
         deliveries
     }
     pub fn acquire_exclusive(&self, owner: String) -> Result<()> {
@@ -290,6 +384,7 @@ impl DeviceEngine {
                     Delivery::Fault { .. } => {
                         s.profile = unknown_profile();
                         s.activity = initial_state();
+                        s.live_stream = None;
                     }
                     _ => (),
                 }
@@ -383,6 +478,9 @@ fn apply_response(s: &mut EngineState, p: &PendingOperation, packet: &Packet) ->
             } else {
                 SubscriptionState::Disabled
             };
+            if !enabled {
+                s.live_stream = None;
+            }
         }
         0x601 => {
             parse_imu_config(packet.body.clone())?;

@@ -6,6 +6,122 @@ fn packet(command: u16, body: Vec<u8>) -> Packet {
 fn u32s(values: &[u32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_be_bytes()).collect()
 }
+#[test]
+fn clock_reply_uses_both_host_timestamps_and_rejects_stale_requests() {
+    let engine = DeviceEngine::new(8).unwrap();
+    let generation = engine.open().unwrap();
+    engine.acquire_exclusive("download".into()).unwrap();
+    let clock = packet(0x401, u32s(&[17]));
+    let request = engine
+        .capture_time_sync(clock.clone(), generation, 100)
+        .unwrap()
+        .unwrap();
+    let reply = decode_packet(
+        engine
+            .prepare_time_sync_reply(request.clone(), 103)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reply.command, 0x402);
+    assert_eq!(reply.body, u32s(&[17, 100, 103]));
+    assert!(engine
+        .capture_time_sync(packet(0x401, vec![0]), generation, 100)
+        .is_err());
+    engine.disconnect(generation);
+    engine.open().unwrap();
+    assert!(engine
+        .capture_time_sync(clock, generation, 100)
+        .unwrap()
+        .is_none());
+    assert!(matches!(
+        engine.prepare_time_sync_reply(request, 104),
+        Err(CoreError::Disconnected)
+    ));
+}
+
+#[test]
+fn capability_discovery_only_falls_back_for_an_unavailable_query() {
+    fn wire_string(value: &str) -> Vec<u8> {
+        [
+            (value.len() as u16).to_be_bytes().as_slice(),
+            value.as_bytes(),
+        ]
+        .concat()
+    }
+    let engine = DeviceEngine::new(8).unwrap();
+    let generation = engine.open().unwrap();
+    let info = [
+        vec![0, 0],
+        wire_string("V2.001.0002.0000-prod-bccb2ffc"),
+        u32s(&[0, 0, 0]),
+        vec![0, 100, 0],
+        wire_string(""),
+        wire_string(""),
+        wire_string("Open Zilo"),
+    ]
+    .concat();
+    engine.begin(0x101, 0x102, vec![], 0, 10, None).unwrap();
+    engine
+        .receive(encode_packet(0x102, info).unwrap(), generation, 1)
+        .unwrap();
+    engine.begin(0x105, 0x106, vec![], 2, 10, None).unwrap();
+    engine.tick(12);
+    assert!(engine
+        .finish_discovery(generation, Some(ErrorCode::DeviceRejected), Some(6))
+        .is_none());
+    assert!(engine
+        .finish_discovery(generation, Some(ErrorCode::InvalidData), None)
+        .is_none());
+    let profile = engine
+        .finish_discovery(generation, Some(ErrorCode::Timeout), None)
+        .unwrap();
+    assert_eq!(profile.source, CapabilitySource::VerifiedLegacyProfile);
+    engine.disconnect(generation);
+    engine.open().unwrap();
+    assert!(engine
+        .finish_discovery(generation, Some(ErrorCode::Timeout), None)
+        .is_none());
+}
+
+#[test]
+fn live_stream_interrupts_on_a_gap_and_requires_a_new_start() {
+    let engine = DeviceEngine::new(8).unwrap();
+    let generation = engine.open().unwrap();
+    let start = packet(
+        0x50f,
+        [u32s(&[7, 0, 17, 0]), vec![0x3e, 0x80, 1, 3]].concat(),
+    );
+    let gap = packet(0x510, [u32s(&[7, 1, 0]), vec![0, 1, 0x08]].concat());
+    let valid = packet(0x510, [u32s(&[7, 0, 0]), vec![0, 1, 0x08]].concat());
+    assert!(matches!(
+        engine.accept_live_event(start.clone(), generation),
+        Some(LiveStreamEvent::Started { .. })
+    ));
+    assert!(matches!(
+        engine.accept_live_event(gap, generation),
+        Some(LiveStreamEvent::Interrupted)
+    ));
+    assert!(engine
+        .accept_live_event(valid.clone(), generation)
+        .is_none());
+    assert!(matches!(
+        engine.accept_live_event(start, generation),
+        Some(LiveStreamEvent::Started { .. })
+    ));
+    assert!(matches!(
+        engine.accept_live_event(valid.clone(), generation),
+        Some(LiveStreamEvent::Frame { .. })
+    ));
+    let end = packet(0x511, [vec![0, 0], u32s(&[7, 0, 1, 1, 0])].concat());
+    assert!(matches!(
+        engine.accept_live_event(end, generation),
+        Some(LiveStreamEvent::Ended { .. })
+    ));
+    engine.disconnect(generation);
+    let next = engine.open().unwrap();
+    assert!(engine.accept_live_event(valid, next).is_none());
+}
+
 fn metadata(index: u32, size: u32) -> Packet {
     packet(0x504, [vec![0, 0], u32s(&[index, 100, size])].concat())
 }
