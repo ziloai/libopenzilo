@@ -27,6 +27,15 @@ OP2C/Ogg/WAV 导出、距离有效期、固件签名
 `DecodeBatch.dropped_crc_packets` 和 `DeviceEngine.take_dropped_crc_packets()`
 提供丢包诊断。单包解码仍拒绝 CRC 错误，其他协议格式错误仍会终止会话。
 
+## 多戒指
+
+`RingBindings` 是可选接口，现有 `DeviceEngine` 和 `DeviceSession` 调用方无需修改。
+宿主给戒指分配绑定 ID，以设备信息中的 CPU ID 或序列号建立绑定，在宿主侧保存
+`list()` 返回的记录，并在重启后用 `restore()` 恢复。宿主探测 BLE 链路后，
+`attach()` 核对身份并返回该链路独立的引擎和会话代数。传输回调应使用该次连接
+返回的引擎，不要仅凭绑定 ID 重新查找。链路关闭时调用 `detach(id, attachment)`，
+由注册表管理引擎的打开和关闭。解绑前先断开；BLE、持久化和自动重连仍由宿主负责。
+
 ## 构建和验证
 
 需要 Rust stable；构建 Python 包还需要 Python 3.10+ 和 maturin。

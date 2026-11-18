@@ -32,6 +32,18 @@ neighboring frames and pending requests. `DecodeBatch.dropped_crc_packets` and
 `DeviceEngine.take_dropped_crc_packets()` expose diagnostics; single-packet decoding
 still rejects CRC errors, and other malformed protocol data remains fatal to sessions.
 
+## Multiple rings
+
+`RingBindings` is optional; existing `DeviceEngine` and `DeviceSession` callers do
+not need to change. Bind a host-assigned ID to the CPU ID (or serial number) from
+system information, persist `list()` in the host, and use `restore()` on restart.
+After the host probes a BLE link, `attach()` checks its identity and returns a
+separate engine and generation for that link. Route callbacks to the engine
+returned by that attachment, not to a fresh lookup by ID. Use `detach(id,
+attachment)` when the transport closes; the registry owns engine open/close.
+Detach before unbinding. BLE, persistence, and reconnect scheduling remain host
+responsibilities.
+
 ## Build and validate
 
 Rust stable is required. Python packaging additionally needs Python 3.10+ and

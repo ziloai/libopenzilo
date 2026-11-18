@@ -345,6 +345,10 @@ impl DeviceEngine {
     }
 }
 impl DeviceEngine {
+    pub(crate) fn seed_device_info(&self, info: DeviceInfo) {
+        self.state.lock().unwrap().info = Some(info);
+    }
+
     fn apply(&self, deliveries: Vec<Delivery>) -> Vec<Delivery> {
         let mut s = self.state.lock().unwrap();
         deliveries

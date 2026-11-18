@@ -17,6 +17,8 @@ mod sensors;
 pub use sensors::*;
 mod engine;
 pub use engine::*;
+mod bindings;
+pub use bindings::*;
 mod policy;
 pub use policy::*;
 mod commands;
