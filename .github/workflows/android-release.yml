@@ -74,7 +74,7 @@ jobs:
           EOF
           gradle -p "$staging" --no-daemon --max-workers=2 assembleRelease
           install -D "$staging/build/outputs/aar/libopenzilo-android-release.aar" "$RUNNER_TEMP/release/libopenzilo-android-$VERSION.aar"
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250a479d7789f
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: android-aar
           path: ${{ runner.temp }}/release/*.aar
