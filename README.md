@@ -93,3 +93,12 @@ See [native API](docs/api.md), [architecture](docs/architecture.md) and
 [validation](docs/validation.md). `library_info()` reports the linked library's
 version, API contract and available features. Native PCM decoding is unavailable
 in this build; platform SDKs may use their own optional decoders.
+
+## Community
+
+- WeChat developer group
+
+  <img src="docs/assets/wechat-group.png" alt="OpenZilo WeChat developer group QR code" width="160">
+
+- [Discord](https://discord.gg/pTJZ3RMHA5)
+- [GitHub Discussions](https://github.com/ziloai/OpenZilo/discussions)

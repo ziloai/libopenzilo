@@ -81,3 +81,12 @@ wheel 与构建平台和架构对应。CI 构建 Linux x86_64、macOS arm64、Wi
 详见[原生 API](docs/api.md)、[架构](docs/architecture.md)和[验证记录](docs/validation.md)。
 `library_info()` 返回已链接库的版本、API 契约及可用功能。本版原生 PCM 解码不可用，
 平台 SDK 可接入可选解码后端。
+
+## 社区
+
+- 微信开发者群
+
+  <img src="docs/assets/wechat-group.png" alt="OpenZilo 开发者微信群二维码" width="160">
+
+- [Discord](https://discord.gg/pTJZ3RMHA5)
+- [GitHub Discussions](https://github.com/ziloai/OpenZilo/discussions)
