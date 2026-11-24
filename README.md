@@ -11,7 +11,7 @@ algorithms in Rust, with native Python and Kotlin bindings.
 | --- | --- |
 | **libopenzilo** | Rust core, UniFFI configuration, native bindings and core tests |
 | [OpenZilo](https://github.com/ziloai/OpenZilo) | Python BLE/asyncio SDK, CLI and Python examples |
-| [openzilo-android](https://github.com/ziloai/openzilo-android) | Android BLE/GATT SDK, Future/Flow, AAR/Maven, tests and example app |
+| [OpenZilo-Connect](https://github.com/ziloai/OpenZilo-Connect) | Android companion app, BLE/GATT integration in `ring-core`, and the `connect-api` client AAR |
 
 Python and Android are peer consumers of this library. Neither platform SDK is
 maintained here. UI, permissions, background execution and file I/O belong to SDK
