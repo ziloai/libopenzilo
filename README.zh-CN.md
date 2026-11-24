@@ -11,7 +11,7 @@
 | --- | --- |
 | **libopenzilo** | Rust 核心、UniFFI 配置、原生绑定和核心测试 |
 | [OpenZilo](https://github.com/ziloai/OpenZilo) | Python BLE/asyncio SDK、CLI 和 Python 示例 |
-| [openzilo-android](https://github.com/ziloai/openzilo-android) | Android BLE/GATT SDK、Future/Flow、AAR/Maven、测试及接入示例 |
+| [OpenZilo-Connect](https://github.com/ziloai/OpenZilo-Connect) | Android 配套应用、`ring-core` 的 BLE/GATT 接入，以及 `connect-api` 客户端 AAR |
 
 Python 与 Android 是平级的核心使用方，两端 SDK 均在独立仓库维护。界面、权限、
 后台策略和文件 I/O 由平台适配或应用负责，Rust 核心不包含 BLE 栈或应用运行时。
