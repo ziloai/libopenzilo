@@ -1,14 +1,21 @@
-name: Publish native bindings
+name: Publish
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing GitHub Release tag (e.g. v0.2.0) to publish wheels to PyPI'
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   build:
+    if: github.event_name == 'push'
     outputs:
       version: ${{ steps.version.outputs.version }}
     runs-on: ubuntu-24.04
@@ -83,6 +90,7 @@ jobs:
           path: ${{ runner.temp }}/release/*.aar
           if-no-files-found: error
   wheels:
+    if: github.event_name == 'push'
     needs: build
     strategy:
       fail-fast: false
@@ -121,7 +129,8 @@ jobs:
           path: dist/*.whl
           if-no-files-found: error
 
-  publish:
+  github-release:
+    if: github.event_name == 'push'
     needs: [build, wheels]
     runs-on: ubuntu-24.04
     permissions:
@@ -142,3 +151,39 @@ jobs:
           gh release create "$GITHUB_REF_NAME" --verify-tag "libopenzilo-android-$VERSION.aar" wheels/*.whl \
             --repo "$GITHUB_REPOSITORY" --title "libopenzilo $VERSION" \
             --notes "Android AAR (arm64-v8a and x86_64) and Python wheels (Linux x86_64, macOS arm64, Windows x86_64). Android consumers must include net.java.dev.jna:jna:5.19.1@aar."
+
+  pypi:
+    needs: [build, wheels]
+    if: >-
+      always() && (
+        (github.event_name == 'push' && needs.build.result == 'success' && needs.wheels.result == 'success') ||
+        github.event_name == 'workflow_dispatch'
+      )
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download built wheels from workflow run
+        if: github.event_name == 'push'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+      - name: Download verified wheels from GitHub Release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          mkdir -p dist
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "*.whl" --dir dist
+          ls -la dist/*.whl
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: false
+      - name: Upload to PyPI
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple dist/*.whl
