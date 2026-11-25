@@ -53,8 +53,8 @@ Opus 使用纯 Rust 的 [opus1](LICENSE-opus1)，Speex 使用纯 Rust 的 `oxide
 
 ## 构建、绑定与验证
 
-需要 Rust 1.95 或更新版本；构建 Python 包还需要 Python 3.10+ 和 maturin。构建和测试核心
-不需要 C 编译器、JDK、Android SDK 或 NDK。
+构建核心需要 Rust 1.95 或更新版本及系统链接器；构建 Python wheel 还需要 Python 3.10+ 和
+maturin。核心不依赖原生 C 库，也不需要 JDK、Android SDK 或 NDK。
 
 ```sh
 cargo fmt --check
@@ -80,8 +80,17 @@ cargo run --locked --features cli --bin uniffi-bindgen -- generate --library tar
 ```
 
 macOS 使用 `.dylib`，Windows 使用 `libopenzilo.dll`。Kotlin 类型位于 `com.zilo.libopenzilo`。
-wheel 与构建平台和架构对应；CI 构建 Linux x86_64、macOS arm64、Windows x86_64 产物，安装后运行
-原生接口检查。先发布通过验证的核心 wheel，再分发依赖它的 SDK。
+
+Python 发行包提供 glibc Linux（x86_64 和 ARM64）、macOS（Intel 和 Apple Silicon）以及
+Windows（x86_64）的 wheel。没有兼容 wheel 时，pip 可以从源码包构建，需要 Rust 1.95+、
+Cargo、目标平台可用的链接器，以及构建依赖的访问权限。若想在有 wheel 时也强制从源码构建：
+
+```sh
+python -m pip install --no-binary=libopenzilo libopenzilo
+```
+
+CI 会在各平台的原生 runner 上安装并检查对应的 wheel，另行验证从源码包构建和安装。
+先发布通过验证的核心发行包，再分发依赖它的 SDK。
 
 详见[原生 API](docs/api.md)、[架构](docs/architecture.md)和[验证记录](docs/validation.md)。
 `library_info()` 返回已链接库的版本、API 契约及可用功能。涉及硬件的行为需在目标设备上验证。

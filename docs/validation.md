@@ -7,7 +7,10 @@ The portable library is validated independently of platform SDKs.
   IMU sequence/timestamp wrap, calibration, profile binding, audio containers,
   distance expiry, signed bundles and OTA identity/version verification.
 - Formatting and Clippy checks run with warnings denied.
-- Native Python wheels are installed and exercised through `tools/smoke_core.py`.
+- Native Python wheels are installed and exercised through `tools/smoke_core.py`
+  on glibc Linux x86_64 and ARM64, macOS Intel and Apple Silicon, and Windows
+  x86_64. CI also installs from the source archive on Linux and runs the same
+  smoke check. Validation and publishing use the same Python build workflow.
 - Kotlin bindings are generated from the same host library in core CI.
 - Platform integration is validated in the peer Python and Android SDK repositories.
   Android GATT, AAR/Maven, lifecycle and sample-app checks are not core tests.

@@ -60,8 +60,9 @@ that engine. Call `detach(id, attachment)` when the transport closes and detach 
 
 ## Build, bindings and validation
 
-Rust 1.95 or newer is required. Python wheels also need Python 3.10+ and maturin. No C
-compiler, JDK, Android SDK or NDK is needed to build or test the core.
+Building the core requires Rust 1.95 or newer and a system linker. Building Python
+wheels also needs Python 3.10+ and maturin. The core has no native C library
+dependencies and does not require a JDK, Android SDK or NDK.
 
 ```sh
 cargo fmt --check
@@ -87,9 +88,21 @@ cargo run --locked --features cli --bin uniffi-bindgen -- generate --library tar
 ```
 
 macOS uses `.dylib`; Windows uses `libopenzilo.dll`. Generated Kotlin records use
-`com.zilo.libopenzilo`. Wheels are native to their build OS and architecture; CI builds
-Linux x86_64, macOS arm64 and Windows x86_64 wheels, installs them and runs the native
-smoke check. Publish validated core wheels before dependent SDKs.
+`com.zilo.libopenzilo`.
+
+Python releases include wheels for glibc Linux (x86_64 and ARM64), macOS (Intel and
+Apple Silicon), and Windows (x86_64). On platforms without a compatible wheel, pip
+can build from the source distribution. This requires Rust 1.95+ with Cargo, a
+working linker for the target, and access to the build dependencies. To request a
+source build even when a wheel is available:
+
+```sh
+python -m pip install --no-binary=libopenzilo libopenzilo
+```
+
+CI installs and smoke-tests each wheel on its native runner and separately builds
+and installs from the source archive. Publish validated core distributions before
+dependent SDKs.
 
 See [native API](docs/api.md), [architecture](docs/architecture.md) and
 [validation](docs/validation.md). `library_info()` reports the linked library's
