@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Portable 6-DoF IMU attitude fusion, ring body-frame axis mapping and posture classification.
-use crate::{invalid, PhysicalImuBatch, PhysicalImuSample, Result};
+use crate::{
+    invalid, ImuConfig, ImuSample, ImuStaticWindow, PhysicalImuBatch, PhysicalImuSample, Result,
+};
 use std::sync::Mutex;
 
 /// Right-handed axis presets mapping IMU sensor axes onto the canonical Ring Body Frame:
@@ -208,12 +210,25 @@ impl Quaternion {
     }
 
     fn euler_deg(self) -> EulerAngles {
+        let sinp = (2.0 * (self.w * self.y - self.z * self.x)).clamp(-1.0, 1.0);
+        let pitch_deg = sinp.asin().to_degrees();
+
+        // Near pitch = ±90° (ring lying flat on table), ZYX Euler hits gimbal lock (0/0 in atan2).
+        // Attribute horizontal plane rotation cleanly to yaw with roll = 0° so stationary micro-noise
+        // never causes ±180° yaw/roll jumps.
+        if sinp.abs() >= 0.9985 {
+            let siny = 2.0 * (self.w * self.z - self.x * self.y);
+            let cosy = 1.0 - 2.0 * (self.x * self.x + self.z * self.z);
+            return EulerAngles {
+                roll_deg: 0.0,
+                pitch_deg,
+                yaw_deg: siny.atan2(cosy).to_degrees(),
+            };
+        }
+
         let sinr_cosp = 2.0 * (self.w * self.x + self.y * self.z);
         let cosr_cosp = 1.0 - 2.0 * (self.x * self.x + self.y * self.y);
         let roll_deg = sinr_cosp.atan2(cosr_cosp).to_degrees();
-
-        let sinp = (2.0 * (self.w * self.y - self.z * self.x)).clamp(-1.0, 1.0);
-        let pitch_deg = sinp.asin().to_degrees();
 
         let siny_cosp = 2.0 * (self.w * self.z + self.x * self.y);
         let cosy_cosp = 1.0 - 2.0 * (self.y * self.y + self.z * self.z);
@@ -359,8 +374,143 @@ struct EstimatorState {
     initialized: bool,
     last_timestamp_ms: Option<u32>,
     gyro_bias_sensor_dps: [f64; 3],
+    ema_initialized: bool,
+    accel_ema_g: [f64; 3],
+    gyro_ema_dps: [f64; 3],
+    bias_bootstrapped: bool,
     stationary_duration_s: f64,
     sample_count: u64,
+}
+
+/// Evaluates a user tabletop static capture (`±16g / ±2000dps` MEMS ring resting on an ordinary
+/// desk) by automatically selecting the quietest contiguous sub-window (~1.4s) so initial/final
+/// finger-tap vibrations on the desk or phone do not cause false rejections, while still rejecting
+/// handheld motion or tilting.
+#[uniffi::export]
+pub fn analyze_desk_imu_window(
+    samples: Vec<ImuSample>,
+    config: ImuConfig,
+) -> Result<ImuStaticWindow> {
+    if config.sample_rate_hz == 0
+        || config.sample_rate_hz > 1000
+        || ![2, 4, 8, 16].contains(&config.accel_range_g)
+        || ![125, 250, 500, 1000, 2000].contains(&config.gyro_range_dps)
+    {
+        return Err(invalid("Invalid IMU configuration for desk calibration"));
+    }
+    let min_win = (config.sample_rate_hz as usize * 7 / 5).clamp(64, 240);
+    if samples.len() < min_win {
+        return Err(invalid(
+            "Not enough IMU samples collected; keep the ring flat on the desk for 3 seconds",
+        ));
+    }
+
+    let accel_lsb = f64::from(config.accel_range_g) / 32768.0;
+    let gyro_lsb = f64::from(config.gyro_range_dps) / 32768.0;
+    let mut phys = Vec::with_capacity(samples.len());
+    for s in &samples {
+        let raw = [
+            s.accel_x, s.accel_y, s.accel_z, s.gyro_x, s.gyro_y, s.gyro_z,
+        ];
+        if raw.iter().any(|&v| i32::from(v).abs() >= 32760) {
+            return Err(invalid("IMU ADC saturated during calibration"));
+        }
+        phys.push((
+            [
+                f64::from(s.accel_x) * accel_lsb,
+                f64::from(s.accel_y) * accel_lsb,
+                f64::from(s.accel_z) * accel_lsb,
+            ],
+            [
+                f64::from(s.gyro_x) * gyro_lsb,
+                f64::from(s.gyro_y) * gyro_lsb,
+                f64::from(s.gyro_z) * gyro_lsb,
+            ],
+        ));
+    }
+
+    let win_len = min_win.min(phys.len());
+    let stride = ((phys.len() - win_len) / 16).max(1);
+    let mut best_score = f64::INFINITY;
+    let mut best_start = 0usize;
+    let mut start = 0usize;
+    loop {
+        let slice = &phys[start..start + win_len];
+        let (_, _, ast, gst) = window_stats(slice);
+        let score = (ast / 0.012).powi(2) + (gst / 0.65).powi(2);
+        if score < best_score {
+            best_score = score;
+            best_start = start;
+        }
+        if start + win_len >= phys.len() {
+            break;
+        }
+        start = (start + stride).min(phys.len() - win_len);
+    }
+
+    let chosen = &phys[best_start..best_start + win_len];
+    let (mean_a, mean_g, ast, gst) = window_stats(chosen);
+    let g_norm = norm3(mean_a);
+    if !(0.70..=1.32).contains(&g_norm) {
+        return Err(invalid(format!(
+            "Gravity norm {g_norm:.3}g out of bounds; rest ring flat on a stationary desk"
+        )));
+    }
+    if mean_g.iter().any(|v| v.abs() > 60.0) {
+        return Err(invalid(
+            "Stationary angular rate exceeds ±60 deg/s hardware bias bounds",
+        ));
+    }
+    if ast > 0.040 || gst > 2.5 {
+        return Err(invalid(format!(
+            "Motion detected (accel std {ast:.4}g, gyro std {gst:.2} dps); place ring on desk and let go"
+        )));
+    }
+    let half = chosen.len() / 2;
+    let (ma1, mg1, _, _) = window_stats(&chosen[..half]);
+    let (ma2, mg2, _, _) = window_stats(&chosen[half..]);
+    if (0..3).any(|i| (ma1[i] - ma2[i]).abs() > 0.030 || (mg1[i] - mg2[i]).abs() > 1.8) {
+        return Err(invalid(
+            "Ring was still settling during capture; keep desk still and retry",
+        ));
+    }
+
+    Ok(ImuStaticWindow {
+        accel_g: mean_a.into(),
+        gyro_dps: mean_g.into(),
+        accel_std_g: ast,
+        gyro_std_dps: gst,
+        samples: win_len as u32,
+    })
+}
+
+fn window_stats(slice: &[([f64; 3], [f64; 3])]) -> ([f64; 3], [f64; 3], f64, f64) {
+    let inv_n = 1.0 / (slice.len().max(1) as f64);
+    let mut ma = [0.0; 3];
+    let mut mg = [0.0; 3];
+    for (a, g) in slice {
+        for i in 0..3 {
+            ma[i] += a[i];
+            mg[i] += g[i];
+        }
+    }
+    for i in 0..3 {
+        ma[i] *= inv_n;
+        mg[i] *= inv_n;
+    }
+    let mut va = [0.0; 3];
+    let mut vg = [0.0; 3];
+    for (a, g) in slice {
+        for i in 0..3 {
+            let da = a[i] - ma[i];
+            let dg = g[i] - mg[i];
+            va[i] += da * da;
+            vg[i] += dg * dg;
+        }
+    }
+    let ast = va.iter().map(|v| (v * inv_n).sqrt()).fold(0.0, f64::max);
+    let gst = vg.iter().map(|v| (v * inv_n).sqrt()).fold(0.0, f64::max);
+    (ma, mg, ast, gst)
 }
 
 #[derive(uniffi::Object)]
@@ -385,6 +535,10 @@ impl ImuAttitudeEstimator {
                 initialized: false,
                 last_timestamp_ms: None,
                 gyro_bias_sensor_dps: [0.0; 3],
+                ema_initialized: false,
+                accel_ema_g: [0.0; 3],
+                gyro_ema_dps: [0.0; 3],
+                bias_bootstrapped: false,
                 stationary_duration_s: 0.0,
                 sample_count: 0,
             }),
@@ -477,15 +631,21 @@ impl ImuAttitudeEstimator {
 
     pub fn set_gyro_bias_sensor_dps(&self, bias_dps: Vec<f64>) -> Result<()> {
         let b = vec3(&bias_dps, "bias_dps")?;
-        if b.iter().any(|v| v.abs() > 25.0) {
-            return Err(invalid("Gyro bias exceeds ±25 deg/s limit"));
+        if b.iter().any(|v| v.abs() > 60.0) {
+            return Err(invalid("Gyro bias exceeds ±60 deg/s limit"));
         }
-        self.state.lock().unwrap().gyro_bias_sensor_dps = b;
+        let mut s = self.state.lock().unwrap();
+        s.gyro_bias_sensor_dps = b;
+        s.bias_bootstrapped = true;
         Ok(())
     }
 
     pub fn clear_gyro_bias(&self) {
-        self.state.lock().unwrap().gyro_bias_sensor_dps = [0.0; 3];
+        let mut s = self.state.lock().unwrap();
+        s.gyro_bias_sensor_dps = [0.0; 3];
+        s.bias_bootstrapped = false;
+        s.ema_initialized = false;
+        s.stationary_duration_s = 0.0;
     }
 
     pub fn zero_heading(&self) {
@@ -533,6 +693,8 @@ impl ImuAttitudeEstimator {
         s.sample_count = 0;
         if !keep_bias {
             s.gyro_bias_sensor_dps = [0.0; 3];
+            s.bias_bootstrapped = false;
+            s.ema_initialized = false;
         }
     }
 
@@ -554,13 +716,41 @@ impl ImuAttitudeEstimator {
         s.sample_count = s.sample_count.saturating_add(1);
 
         let accel_mag = norm3(raw_accel);
-        let pre_gyro = sub3(raw_gyro, s.gyro_bias_sensor_dps);
-        if (accel_mag - 1.0).abs() < 0.035 && norm3(pre_gyro) < 2.0 {
+        if !s.ema_initialized {
+            s.accel_ema_g = raw_accel;
+            s.gyro_ema_dps = raw_gyro;
+            s.ema_initialized = true;
+        }
+        let accel_delta = norm3(sub3(raw_accel, s.accel_ema_g));
+        let gyro_delta = norm3(sub3(raw_gyro, s.gyro_ema_dps));
+        let ema_alpha = (dt_s / 0.18).clamp(0.01, 0.25);
+        for ((ae, &ra), (ge, &rg)) in s
+            .accel_ema_g
+            .iter_mut()
+            .zip(&raw_accel)
+            .zip(s.gyro_ema_dps.iter_mut().zip(&raw_gyro))
+        {
+            *ae += ema_alpha * (ra - *ae);
+            *ge += ema_alpha * (rg - *ge);
+        }
+
+        // Constancy-based ZUPT: works reliably even when uncalibrated MEMS accel norm != 1.00g
+        // (e.g. 0.93g..1.08g) and even when factory gyro zero-rate bias is several deg/s.
+        let temporally_still = (0.65..=1.40).contains(&accel_mag)
+            && norm3(raw_gyro) < 55.0
+            && accel_delta < 0.025
+            && gyro_delta < 1.8;
+        if temporally_still {
             s.stationary_duration_s = (s.stationary_duration_s + dt_s).min(10.0);
-            if s.stationary_duration_s >= 0.4 {
-                let alpha = (dt_s * 0.8).clamp(0.001, 0.02);
-                for (bias, &gyro) in s.gyro_bias_sensor_dps.iter_mut().zip(&raw_gyro) {
-                    *bias += alpha * (gyro - *bias);
+            if s.stationary_duration_s >= 0.30 {
+                if !s.bias_bootstrapped {
+                    s.gyro_bias_sensor_dps = s.gyro_ema_dps;
+                    s.bias_bootstrapped = true;
+                } else {
+                    let alpha = (dt_s * 1.5).clamp(0.002, 0.04);
+                    for (bias, &gyro) in s.gyro_bias_sensor_dps.iter_mut().zip(&raw_gyro) {
+                        *bias += alpha * (gyro - *bias);
+                    }
                 }
             }
         } else {
@@ -573,8 +763,20 @@ impl ImuAttitudeEstimator {
         s.last_mapped_accel = Some(mapped_accel);
 
         let accel_body = s.mount.rotate_body_to_world(mapped_accel);
-        let gyro_body_dps = s.mount.rotate_body_to_world(mapped_gyro);
+        let mut gyro_body_dps = s.mount.rotate_body_to_world(mapped_gyro);
         let bias_body_dps = s.mount.rotate_body_to_world(mapped_bias);
+
+        let angular_speed_raw = norm3(gyro_body_dps);
+        let is_stationary = s.stationary_duration_s >= 0.25 && angular_speed_raw < 1.8;
+        if is_stationary {
+            gyro_body_dps = [0.0; 3];
+        } else if angular_speed_raw < 0.45 && accel_delta < 0.020 {
+            // Smooth cubic deadband below 0.45 dps suppresses ±2000dps quantization creep in Yaw
+            let scale = (angular_speed_raw / 0.45).powi(2);
+            for g in &mut gyro_body_dps {
+                *g *= scale;
+            }
+        }
 
         if !s.initialized {
             if (0.5..=1.6).contains(&accel_mag) {
@@ -586,8 +788,9 @@ impl ImuAttitudeEstimator {
             let mut wx = gyro_body_dps[0].to_radians();
             let mut wy = gyro_body_dps[1].to_radians();
             let mut wz = gyro_body_dps[2].to_radians();
-            if (0.4..=2.0).contains(&accel_mag) {
-                let dev = (accel_mag - 1.0) / 0.18;
+            let mut grav_err_norm = 0.0;
+            if (0.4..=2.0).contains(&accel_mag) && accel_mag > 1e-6 {
+                let dev = (accel_mag - norm3(s.accel_ema_g).clamp(0.85, 1.15)) / 0.18;
                 let kp_eff = s.kp * (-dev * dev).exp();
                 if kp_eff > 1e-4 {
                     let measured_up = [
@@ -597,30 +800,37 @@ impl ImuAttitudeEstimator {
                     ];
                     let estimated_up = s.q_raw.rotate_world_to_body([0.0, 0.0, 1.0]);
                     let err = cross(measured_up, estimated_up);
-                    wx += kp_eff * err[0];
-                    wy += kp_eff * err[1];
-                    wz += kp_eff * err[2];
+                    grav_err_norm = norm3(err);
+                    // Freeze pose completely when stationary and leveled (< 2.0°) so accel noise
+                    // never induces micro-jitter or gimbal-lock yaw oscillation.
+                    if !(is_stationary && grav_err_norm < 0.035) {
+                        wx += kp_eff * err[0];
+                        wy += kp_eff * err[1];
+                        wz += kp_eff * err[2];
+                    }
                 }
             }
-            let omega = norm3([wx, wy, wz]);
-            let dq = if omega > 1e-7 {
-                let half = 0.5 * omega * dt_s;
-                let k = half.sin() / omega;
-                Quaternion {
-                    w: half.cos(),
-                    x: wx * k,
-                    y: wy * k,
-                    z: wz * k,
-                }
-            } else {
-                Quaternion {
-                    w: 1.0,
-                    x: 0.5 * wx * dt_s,
-                    y: 0.5 * wy * dt_s,
-                    z: 0.5 * wz * dt_s,
-                }
-            };
-            s.q_raw = s.q_raw.mul(dq).normalized();
+            if !(is_stationary && grav_err_norm < 0.035) {
+                let omega = norm3([wx, wy, wz]);
+                let dq = if omega > 1e-7 {
+                    let half = 0.5 * omega * dt_s;
+                    let k = half.sin() / omega;
+                    Quaternion {
+                        w: half.cos(),
+                        x: wx * k,
+                        y: wy * k,
+                        z: wz * k,
+                    }
+                } else {
+                    Quaternion {
+                        w: 1.0,
+                        x: 0.5 * wx * dt_s,
+                        y: 0.5 * wy * dt_s,
+                        z: 0.5 * wz * dt_s,
+                    }
+                };
+                s.q_raw = s.q_raw.mul(dq).normalized();
+            }
         }
 
         let q_display = match s.full_tare {
@@ -646,7 +856,7 @@ impl ImuAttitudeEstimator {
             gyro_bias_dps: bias_body_dps.into(),
             accel_norm_g: accel_mag,
             angular_speed_dps: angular_speed,
-            stationary: s.stationary_duration_s >= 0.25,
+            stationary: is_stationary,
             sample_count: s.sample_count,
         })
     }

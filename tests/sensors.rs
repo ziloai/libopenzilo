@@ -453,3 +453,72 @@ fn attitude_fusion_posture_opengl_matrix_and_scoped_key() {
         + (c0[0] * c1[1] - c0[1] * c1[0]) * c2[2];
     assert!((det - 1.0).abs() < 1e-5);
 }
+
+#[test]
+fn desk_calibration_tolerates_initial_tap_and_stationary_zupt_locks_yaw_at_gimbal_lock() {
+    // 1. First 40 samples have a finger-tap desk transient; remaining 220 samples have realistic
+    // ±16g / ±2000dps MEMS thermal noise and a 6.1 dps gyro Z bias.
+    let samples: Vec<ImuSample> = (0..260)
+        .map(|i| {
+            let tap = if i < 40 {
+                ((i as i16 % 5) - 2) * 180
+            } else {
+                0
+            };
+            let noise_a = ((i as i16 * 7) % 5) - 2;
+            let noise_g = ((i as i16 * 11) % 13) - 6; // ±0.37 dps noise (> 0.3 dps lab limit)
+            ImuSample {
+                timestamp_ms: i * 10,
+                accel_x: 2150 + tap + noise_a, // ~1.05g uncalibrated offset
+                accel_y: -20,
+                accel_z: 15,
+                gyro_x: 100 + noise_g, // ~6.1 dps factory bias
+                gyro_y: -35 + noise_g,
+                gyro_z: 48 + noise_g,
+            }
+        })
+        .collect();
+    let desk_win = analyze_desk_imu_window(samples, config()).unwrap();
+    assert!((desk_win.gyro_dps[0] - 100.0 * 2000.0 / 32768.0).abs() < 0.25);
+
+    // Real handheld motion must still be rejected
+    let moving: Vec<ImuSample> = (0..200)
+        .map(|i| ImuSample {
+            timestamp_ms: i * 10,
+            accel_x: 2048 + ((i as i16 % 20) - 10) * 40,
+            accel_y: 0,
+            accel_z: 0,
+            gyro_x: ((i as i16 % 17) - 8) * 90,
+            gyro_y: 0,
+            gyro_z: 0,
+        })
+        .collect();
+    assert!(analyze_desk_imu_window(moving, config()).is_err());
+
+    // 2. Flat-on-table (pitch = -90° gimbal lock) with uncalibrated 1.06g accel + 6.5 dps gyro bias:
+    // After 0.4s ZUPT bootstrap, yaw must lock to 0.0000° drift despite thermal noise!
+    let est = ImuAttitudeEstimator::new(default_ring_axis_mapping(None), 1.6).unwrap();
+    let mut yaw_at_half_sec = 0.0;
+    for i in 0..250u32 {
+        let jitter = ((i as f64 * 1.7).sin()) * 0.002;
+        let snap = est
+            .accept_sample(PhysicalImuSample {
+                timestamp_ms: i * 10,
+                accel_g: vec![1.06 + jitter, -jitter, 0.001 * ((i as f64).cos())],
+                gyro_dps: vec![6.5 + jitter * 40.0, -2.2, 4.1],
+            })
+            .unwrap();
+        if i == 50 {
+            assert!(snap.stationary);
+            yaw_at_half_sec = snap.euler.yaw_deg;
+        }
+        if i > 50 {
+            assert!(
+                (snap.euler.yaw_deg - yaw_at_half_sec).abs() < 1e-6,
+                "Expected zero stationary yaw drift at flat gimbal lock, got {} vs {}",
+                snap.euler.yaw_deg,
+                yaw_at_half_sec
+            );
+        }
+    }
+}

@@ -13,7 +13,7 @@
 | Recording | Configuration/status parsers, `recording_completion`, engine activity states |
 | Stored audio | `DownloadTransfer`, `AudioSinkTransfer`, `AudioAssembler`, `AutoAudioTransfer` |
 | Live audio | `LiveValidator` for complete recordings; `LivePreviewValidator` for opt-in START/GAP/DATA/END events |
-| IMU | Raw/physical batches (`raw_imu_to_physical`, `apply_imu_calibration`), `ImuContinuity`, `identity_imu_calibration`, `ImuStaticCollector`, calibration/validation, `ImuAttitudeEstimator`, `ImuAxisMapping`, `RingPosture`, `quaternion_to_opengl_matrix` |
+| IMU | Raw/physical batches (`raw_imu_to_physical`, `apply_imu_calibration`), `ImuContinuity`, `identity_imu_calibration`, `ImuStaticCollector`, `analyze_desk_imu_window`, calibration/validation, `ImuAttitudeEstimator`, `ImuAxisMapping`, `RingPosture`, `quaternion_to_opengl_matrix` |
 | Profiles | Profile parsing, serialization, `stable_device_key`, `scoped_device_key` and device/source binding checks |
 | Audio | OP2C, Ogg Opus/Speex, PCM WAV, ring Opus-to-PCM decoding and aligned dual-mic suppression |
 | Legacy Speex | `decode_speex_pcm` (Ogg, length-prefixed or raw packets), `decode_ogg_speex_pcm`, `RingSpeexDecoder`, `parse_packetized_speex_stream`, `split_raw_speex_packets`, `speex_packet_size`, `normalize_decoded_speex_pcm`, `is_wav`, `is_ogg_speex` |

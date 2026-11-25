@@ -39,6 +39,8 @@ assert core.identity_imu_calibration(core.ImuConfig(sample_rate_hz=100, accel_ra
 est = core.ImuAttitudeEstimator(core.default_ring_axis_mapping(None), 1.6)
 pose = est.accept_sample(core.PhysicalImuSample(timestamp_ms=10, accel_g=[0.0, 0.0, -1.0], gyro_dps=[0.0, 0.0, 0.0]))
 assert pose.posture == core.RingPosture.HORIZONTAL_FLIPPED and len(core.quaternion_to_opengl_matrix(pose.quaternion)) == 16
+desk_win = core.analyze_desk_imu_window([core.ImuSample(timestamp_ms=i * 10, accel_x=2048, accel_y=0, accel_z=0, gyro_x=16, gyro_y=0, gyro_z=0) for i in range(160)], core.ImuConfig(sample_rate_hz=100, accel_range_g=16, gyro_range_dps=2000))
+assert desk_win.samples >= 140
 engine = core.DeviceEngine(16)
 generation = engine.open()
 assert not engine.receive(bytes(bad), generation, 0)
