@@ -1,0 +1,44 @@
+name: Publish Rust crate
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  crates-io:
+    if: github.repository == 'ziloai/libopenzilo'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Verify release tag matches Cargo.toml
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          python3 - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          version = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+          if tag != f"v{version}":
+              raise SystemExit(f"Release tag {tag} does not match Cargo.toml version {version}")
+          PY
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked
+      - name: Authenticate with crates.io via OIDC
+        id: crates-auth
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+        run: cargo publish --locked

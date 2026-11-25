@@ -19,3 +19,12 @@ Tests use synthetic fixtures. No usable firmware images, production private keys
 real device identifiers or captures are distributed. Parser/state-machine tests
 and native loading checks do not establish hardware behavior, calibration accuracy
 or a completed firmware installation. Those require separate device acceptance.
+
+## Rust releases
+
+Pushing a `vX.Y.Z` tag triggers `publish-crate.yml`. The workflow checks that the
+tag matches `Cargo.toml`, runs the Rust tests, and publishes to crates.io with a
+short-lived OIDC token, independently of the Python and Android release jobs.
+The [crates.io trusted publisher](https://crates.io/docs/trusted-publishing) for
+`libopenzilo` must use GitHub owner `ziloai`, repository `libopenzilo`, workflow
+`publish-crate.yml`, and environment `crates-io`.
