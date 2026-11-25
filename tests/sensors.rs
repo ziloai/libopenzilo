@@ -396,3 +396,60 @@ fn ogg_granules_and_wav_units_are_consistent() {
         Err(CoreError::Invalid { .. })
     ));
 }
+#[test]
+fn attitude_fusion_posture_opengl_matrix_and_scoped_key() {
+    let device = info();
+    let k1 = scoped_device_key(device.clone(), "com.example.a:cert1".into()).unwrap();
+    let k2 = scoped_device_key(device.clone(), "com.example.b:cert2".into()).unwrap();
+    assert_eq!(k1.len(), 64);
+    assert_ne!(k1, k2);
+    assert_ne!(k1, stable_device_key(device.clone()).unwrap());
+    assert!(scoped_device_key(device, " untrimmed ".into()).is_err());
+
+    let raw = raw_imu_to_physical(static_batch(0, 2), config()).unwrap();
+    assert_eq!(raw.samples.len(), 2);
+    assert!(raw.applied_components.is_empty());
+
+    let mk_sample = |t: u32, ax: f64, ay: f64, az: f64| PhysicalImuSample {
+        timestamp_ms: t,
+        accel_g: vec![ax, ay, az],
+        gyro_dps: vec![0.0, 0.0, 0.0],
+    };
+    let default_map = default_ring_axis_mapping(None);
+
+    let est_up = ImuAttitudeEstimator::new(default_map, 1.6).unwrap();
+    let up = est_up.accept_sample(mk_sample(10, 0.0, 0.0, 1.0)).unwrap();
+    assert_eq!(up.posture, RingPosture::HorizontalUpright);
+    assert!(up.tilt_from_zenith_deg.abs() < 0.5);
+
+    let est_flip = ImuAttitudeEstimator::new(default_map, 1.6).unwrap();
+    let flip = est_flip
+        .accept_sample(mk_sample(10, 0.0, 0.0, -1.0))
+        .unwrap();
+    assert_eq!(flip.posture, RingPosture::HorizontalFlipped);
+    assert!((flip.tilt_from_zenith_deg - 180.0).abs() < 0.5);
+
+    let est_edge = ImuAttitudeEstimator::new(default_map, 1.6).unwrap();
+    let edge = est_edge
+        .accept_sample(mk_sample(10, 0.0, 1.0, 0.0))
+        .unwrap();
+    assert_eq!(edge.posture, RingPosture::VerticalStandingEdge);
+    assert!((edge.tilt_from_zenith_deg - 90.0).abs() < 0.5);
+
+    let est_bore = ImuAttitudeEstimator::new(default_map, 1.6).unwrap();
+    let bore = est_bore
+        .accept_sample(mk_sample(10, 1.0, 0.0, 0.0))
+        .unwrap();
+    assert_eq!(bore.posture, RingPosture::VerticalBoreAxis);
+    assert!((bore.euler.pitch_deg.abs() - 90.0).abs() < 0.5);
+
+    let m = quaternion_to_opengl_matrix(flip.quaternion).unwrap();
+    assert_eq!(m.len(), 16);
+    let c0 = [m[0], m[1], m[2]];
+    let c1 = [m[4], m[5], m[6]];
+    let c2 = [m[8], m[9], m[10]];
+    let det = (c0[1] * c1[2] - c0[2] * c1[1]) * c2[0]
+        + (c0[2] * c1[0] - c0[0] * c1[2]) * c2[1]
+        + (c0[0] * c1[1] - c0[1] * c1[0]) * c2[2];
+    assert!((det - 1.0).abs() < 1e-5);
+}

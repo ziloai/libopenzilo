@@ -186,8 +186,26 @@ struct OtaState {
 pub struct OtaTransfer {
     state: Mutex<OtaState>,
 }
-fn board(s: &str) -> Vec<&str> {
-    s.split('/').filter(|s| !s.is_empty()).collect()
+fn board(s: &str) -> Option<Vec<&str>> {
+    let parts: Vec<&str> = s.split('/').filter(|s| !s.is_empty()).collect();
+    (!parts.is_empty() && !parts.iter().any(|p| *p == "." || *p == "..")).then_some(parts)
+}
+#[uniffi::export]
+pub fn boards_match(a: String, b: String) -> bool {
+    matches!((board(&a), board(&b)), (Some(x), Some(y)) if x == y)
+}
+/// Canonical verified manifest, identical on every platform.
+#[uniffi::export]
+pub fn firmware_bundle_manifest_json(bundle: FirmwareBundle) -> Result<String> {
+    serde_json::to_string(&serde_json::json!({
+        "schema": 1, "algorithm": "ECDSA-P256-SHA256", "image": "app",
+        "version": bundle.version, "model": bundle.model, "board": bundle.board,
+        "profile": bundle.profile, "security_version": bundle.security_version,
+        "source_versions": bundle.source_versions, "key_id": bundle.signing_key_id,
+        "payload": {"file": "app.ota.bin", "format": "RINGENC1",
+            "size": bundle.payload.len(), "sha256": hex(&Sha256::digest(&bundle.payload))},
+    }))
+    .map_err(|_| invalid("Invalid firmware manifest"))
 }
 #[uniffi::export]
 impl OtaTransfer {
@@ -206,7 +224,7 @@ impl OtaTransfer {
         if b.model != before.model {
             return Err(invalid("Device model differs from signed manifest"));
         }
-        if board_target.is_empty() || board(&board_target) != board(&b.board) {
+        if !boards_match(board_target, b.board.clone()) {
             return Err(invalid(
                 "Device board is unknown or differs from signed manifest",
             ));

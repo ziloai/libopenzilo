@@ -1,9 +1,10 @@
 [package]
 name = "libopenzilo"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
+rust-version = "1.95"
 license = "MPL-2.0"
-description = "Shared OpenZilo device protocol engine for Python and mobile applications"
+description = "Unified high-performance OpenZilo interaction library in Rust with Python and Kotlin bindings"
 repository = "https://github.com/ziloai/libopenzilo"
 readme = "README.md"
 
@@ -23,6 +24,8 @@ cli = ["uniffi/cli"]
 uniffi = "0.31"
 opus1 = { version = "0.3.0", default-features = false, features = ["std", "heap"] }
 thiserror = "2"
+oxideav-speex = "0.0.12"
+oxideav-ogg = "0.1.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

@@ -424,3 +424,218 @@ impl Default for DualMicDenoiser {
         }
     }
 }
+
+fn check_pcm_format(f: &PcmFormat) -> Result<()> {
+    if f.sample_rate_hz == 0 || !(1..=2).contains(&f.channels) || ![8, 16].contains(&f.bit_depth) {
+        return Err(invalid("Unsupported PCM format"));
+    }
+    Ok(())
+}
+fn resample_interleaved(samples: &[i16], channels: usize, src: u32, dst: u32) -> Vec<i16> {
+    if src == dst || samples.is_empty() {
+        return samples.to_vec();
+    }
+    let in_frames = samples.len() / channels;
+    let out_frames = (in_frames as u128 * u128::from(dst) / u128::from(src)) as usize;
+    let mut out = Vec::with_capacity(out_frames * channels);
+    for i in 0..out_frames {
+        let pos = i as f64 * f64::from(src) / f64::from(dst);
+        let idx = (pos as usize).min(in_frames - 1);
+        let next = (idx + 1).min(in_frames - 1);
+        let frac = pos - idx as f64;
+        for c in 0..channels {
+            let a = f64::from(samples[idx * channels + c]);
+            let b = f64::from(samples[next * channels + c]);
+            out.push(
+                (a * (1.0 - frac) + b * frac)
+                    .round()
+                    .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16,
+            );
+        }
+    }
+    out
+}
+fn encode_samples(samples: &[i16], bit_depth: u16) -> Vec<u8> {
+    if bit_depth == 16 {
+        samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+    } else {
+        samples
+            .iter()
+            .map(|s| ((i32::from(*s) >> 8) + 128).clamp(0, 255) as u8)
+            .collect()
+    }
+}
+fn speex_error(e: impl std::fmt::Display) -> CoreError {
+    invalid(format!("Invalid Speex payload: {e}"))
+}
+/// Decode one packet; legacy packets with trailing padding that decode extra frames keep only
+/// the first 20 ms frame.
+fn decode_speex_frame(
+    decoder: &mut oxideav_speex::SpeexStreamDecoder,
+    packet: &[u8],
+    channels: usize,
+) -> Result<Vec<i16>> {
+    if packet.is_empty() {
+        return Err(invalid("Empty Speex packet"));
+    }
+    let mut samples = if channels == 2 {
+        decoder.decode_packet_stereo_i16(packet)
+    } else {
+        decoder.decode_packet_pcm_i16(packet)
+    }
+    .map_err(speex_error)?;
+    let expected = decoder.frame_samples() * channels;
+    if samples.is_empty() {
+        return Err(invalid("Speex packet decoded zero samples"));
+    }
+    if samples.len() > expected && samples.len().is_multiple_of(expected) {
+        samples.truncate(expected);
+    }
+    Ok(samples)
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct SpeexDecodedAudio {
+    pub pcm_bytes: Vec<u8>,
+    pub format: PcmFormat,
+    pub source_type: String,
+    pub packet_count: u32,
+}
+
+/// Stateful pure-Rust decoder for ordered legacy Speex packets (20 ms each).
+#[derive(uniffi::Object)]
+pub struct RingSpeexDecoder {
+    channels: u16,
+    rate: u32,
+    decoder: std::sync::Mutex<oxideav_speex::SpeexStreamDecoder>,
+}
+
+#[uniffi::export]
+impl RingSpeexDecoder {
+    #[uniffi::constructor]
+    pub fn new(sample_rate_hz: u32, channels: u16) -> Result<Self> {
+        if !(1..=2).contains(&channels) {
+            return Err(invalid("Speex requires one or two output channels"));
+        }
+        let decoder = oxideav_speex::SpeexStreamDecoder::for_sample_rate(sample_rate_hz)
+            .map_err(|_| invalid("Speex supports 8000, 16000 or 32000 Hz"))?;
+        Ok(Self {
+            channels,
+            rate: sample_rate_hz,
+            decoder: std::sync::Mutex::new(decoder),
+        })
+    }
+    pub fn format(&self) -> PcmFormat {
+        PcmFormat {
+            sample_rate_hz: self.rate,
+            channels: self.channels,
+            bit_depth: 16,
+        }
+    }
+    /// Decode one in-order packet to PCM16LE (mono, or duplicated/intensity stereo).
+    pub fn decode_packet(&self, packet: Vec<u8>) -> Result<Vec<u8>> {
+        let mut decoder = self.decoder.lock().unwrap();
+        let samples = decode_speex_frame(&mut decoder, &packet, usize::from(self.channels))?;
+        Ok(encode_samples(&samples, 16))
+    }
+}
+
+/// Decode an Ogg Speex file to PCM in the requested format.
+#[uniffi::export]
+pub fn decode_ogg_speex_pcm(data: Vec<u8>, target_format: PcmFormat) -> Result<Vec<u8>> {
+    check_pcm_format(&target_format)?;
+    let packets = oxideav_ogg::framing::pages_to_packets(&data)
+        .map_err(|e| invalid(format!("Invalid Ogg Speex container: {e}")))?;
+    let header = packets
+        .first()
+        .ok_or_else(|| invalid("Ogg Speex stream has no packets"))
+        .and_then(|p| {
+            oxideav_speex::SpeexHeader::parse(p)
+                .map_err(|e| invalid(format!("Invalid Speex header: {e}")))
+        })?;
+    let audio_start = 2usize
+        .checked_add(header.extra_headers as usize)
+        .filter(|start| *start <= packets.len())
+        .ok_or_else(|| invalid("Ogg Speex stream is missing header packets"))?;
+    let mut decoder = oxideav_speex::SpeexStreamDecoder::for_header(&header)
+        .map_err(|e| invalid(format!("Unsupported Speex header: {e}")))?;
+    let source_channels = if header.nb_channels == 2 { 2 } else { 1 };
+    let mut samples = Vec::new();
+    for packet in &packets[audio_start..] {
+        samples.extend(decode_speex_frame(&mut decoder, packet, source_channels)?);
+    }
+    let target = usize::from(target_format.channels);
+    if source_channels == 2 && target == 1 {
+        samples = samples
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| ((i32::from(p[0]) + i32::from(p[1])) / 2) as i16)
+            .collect();
+    } else if source_channels == 1 && target == 2 {
+        samples = samples.iter().flat_map(|s| [*s, *s]).collect();
+    }
+    let samples = resample_interleaved(
+        &samples,
+        target,
+        decoder.output_rate_hz(),
+        target_format.sample_rate_hz,
+    );
+    Ok(encode_samples(&samples, target_format.bit_depth))
+}
+
+/// Decode legacy Speex (Ogg, length-prefixed packets, or fixed-size raw packets).
+#[uniffi::export]
+pub fn decode_speex_pcm(
+    data: Vec<u8>,
+    target_format: PcmFormat,
+    quality: u8,
+    bits_size: Option<u32>,
+    max_packet_size: u32,
+    framed_block_size: Option<u32>,
+) -> Result<SpeexDecodedAudio> {
+    if data.is_empty() {
+        return Err(invalid("Speex data is empty"));
+    }
+    check_pcm_format(&target_format)?;
+    if is_ogg_speex(data.clone()) {
+        return Ok(SpeexDecodedAudio {
+            pcm_bytes: decode_ogg_speex_pcm(data, target_format.clone())?,
+            format: target_format,
+            source_type: "ogg-speex".into(),
+            packet_count: 0,
+        });
+    }
+    let (source_type, packets) =
+        match parse_packetized_speex_stream(data.clone(), max_packet_size, framed_block_size)? {
+            Some(packets) => ("packet-speex", packets),
+            None => match split_raw_speex_packets(data, quality, bits_size)? {
+                Some(packets) => ("raw-speex", packets),
+                None => {
+                    return Err(invalid(
+                        "bin data does not look like packetized or raw Speex",
+                    ))
+                }
+            },
+        };
+    let rate = match target_format.sample_rate_hz {
+        0..=8000 => 8000,
+        8001..=16000 => 16000,
+        _ => 32000,
+    };
+    let mut decoder = oxideav_speex::SpeexStreamDecoder::for_sample_rate(rate)
+        .map_err(|e| invalid(e.to_string()))?;
+    let channels = usize::from(target_format.channels);
+    let mut samples = Vec::new();
+    for packet in &packets {
+        samples.extend(decode_speex_frame(&mut decoder, packet, channels)?);
+    }
+    let samples = resample_interleaved(&samples, channels, rate, target_format.sample_rate_hz);
+    Ok(SpeexDecodedAudio {
+        pcm_bytes: encode_samples(&samples, target_format.bit_depth),
+        format: target_format,
+        source_type: source_type.into(),
+        packet_count: u32::try_from(packets.len())
+            .map_err(|_| invalid("Too many Speex packets"))?,
+    })
+}

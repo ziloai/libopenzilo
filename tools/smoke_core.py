@@ -36,10 +36,23 @@ first = core.decode_packet(core.encode_packet(0x50a, b"\x00\x00\x00\x00\x00\x05"
 assert auto_audio.accept(first, 1).request.command == 0x503
 auto_audio.cancel()
 assert core.identity_imu_calibration(core.ImuConfig(sample_rate_hz=100, accel_range_g=16, gyro_range_dps=2000)).sensor_type == 0
+est = core.ImuAttitudeEstimator(core.default_ring_axis_mapping(None), 1.6)
+pose = est.accept_sample(core.PhysicalImuSample(timestamp_ms=10, accel_g=[0.0, 0.0, -1.0], gyro_dps=[0.0, 0.0, 0.0]))
+assert pose.posture == core.RingPosture.HORIZONTAL_FLIPPED and len(core.quaternion_to_opengl_matrix(pose.quaternion)) == 16
 engine = core.DeviceEngine(16)
 generation = engine.open()
 assert not engine.receive(bytes(bad), generation, 0)
 assert engine.take_dropped_crc_packets() == 1
 assert engine.take_dropped_crc_packets() == 0
 engine.disconnect(generation)
+assert core.device_error_message(5) == "command not exist"
+assert core.ble_transport_spec().write_chunk_size == 20
+assert core.is_compatible_ring_name("prefix Open Zilo-abc") and not core.is_compatible_ring_name("earring")
+assert core.ble_address_matches("aa-bb", "AA:BB")
+assert core.local_device_key(" ABC ") == core.local_device_key("abc")
+assert core.boards_match("a//b", "/a/b") and not core.boards_match("a/..", "a/..")
+_fmt = core.PcmFormat(sample_rate_hz=8000, channels=1, bit_depth=16)
+_enc = core.export_ogg_speex([b"\x00" * 10], 8000, 1)
+assert "speex_pcm_decoder" in info.features and core.is_ogg_speex(_enc)
+assert core.RingSpeexDecoder(8000, 1).format().sample_rate_hz == 8000
 print(f"libopenzilo {info.version} contract {info.api_contract}: wheel smoke passed")

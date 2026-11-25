@@ -27,6 +27,7 @@ jobs:
           python3 -c 'import os, tomllib; assert tomllib.load(open("Cargo.toml", "rb"))["package"]["version"] == os.environ["VERSION"]'
           printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
           printf 'VERSION=%s\n' "$VERSION" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: temurin
@@ -52,7 +53,7 @@ jobs:
             env "${linker//-/_}=$ndk/${triple}26-clang" cargo build --locked --release --lib --target "$triple"
             install -D "target/$triple/release/liblibopenzilo.so" "$staging/src/main/jniLibs/$abi/liblibopenzilo.so"
           done
-          cp LICENSE LICENSE-opus1 "$staging/src/main/assets/libopenzilo/"
+          cp LICENSE LICENSE-opus1 LICENSE-oxideav "$staging/src/main/assets/libopenzilo/"
           printf '<manifest />\n' > "$staging/src/main/AndroidManifest.xml"
           printf '%s\n' '-keep class com.zilo.libopenzilo.** { *; }' '-keep class com.sun.jna.** { *; }' '-keepclasseswithmembers class * extends com.sun.jna.Structure { <fields>; }' > "$staging/consumer-rules.pro"
           cat > "$staging/settings.gradle.kts" <<'EOF'
@@ -102,6 +103,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.10'
+      - uses: dtolnay/rust-toolchain@stable
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
         with:
           target: ${{ matrix.target }}

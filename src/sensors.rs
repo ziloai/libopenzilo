@@ -64,6 +64,11 @@ pub struct PhysicalImuBatch {
     pub applied_components: Vec<String>,
 }
 #[uniffi::export]
+pub fn raw_imu_to_physical(batch: ImuBatch, config: ImuConfig) -> Result<PhysicalImuBatch> {
+    let identity = identity_imu_calibration(config.clone())?;
+    apply_imu_calibration(batch, config, identity, false, false)
+}
+#[uniffi::export]
 pub fn apply_imu_calibration(
     batch: ImuBatch,
     config: ImuConfig,
@@ -504,11 +509,16 @@ impl ImuStaticCollector {
             if batch.frame_count == 0
                 || batch.frame_count as usize != batch.samples.len()
                 || batch.sample_size != 16
-                || state
-                    .next_sequence
-                    .is_some_and(|next| next != batch.sequence_start)
             {
-                return Err(invalid("IMU sample sequence gap or invalid batch"));
+                return Err(invalid("Received an empty or invalid sensor batch"));
+            }
+            if state
+                .next_sequence
+                .is_some_and(|next| next != batch.sequence_start)
+            {
+                return Err(invalid(
+                    "Sample sequence gap detected; ensure a stable connection and retry",
+                ));
             }
             state.next_sequence = Some(
                 batch

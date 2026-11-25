@@ -6,9 +6,9 @@ build-backend = "maturin"
 name = "libopenzilo"
 dynamic = ["version"]
 requires-python = ">=3.10"
-description = "Shared native OpenZilo protocol and device core"
+description = "Unified high-performance OpenZilo interaction library"
 license = "MPL-2.0"
-license-files = ["LICENSE", "LICENSE-opus1"]
+license-files = ["LICENSE", "LICENSE-opus1", "LICENSE-oxideav"]
 readme = "README.md"
 
 [project.urls]

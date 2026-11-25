@@ -209,6 +209,173 @@ fn live_sequence_and_verified_end() {
     data[7] = 1;
     assert!(v.accept(packet(0x510, data)).is_err());
 }
+
+fn live_start() -> Packet {
+    let mut body = Vec::new();
+    for field in [1u32, 0, 99, 0] {
+        body.extend(field.to_be_bytes());
+    }
+    body.extend([0x3e, 0x80, 2, 3]);
+    packet(0x50f, body)
+}
+
+fn live_data(session: u32, sequence: u32, offset: u32, opus: &[u8]) -> Packet {
+    let mut body = Vec::new();
+    for field in [session, sequence, offset] {
+        body.extend(field.to_be_bytes());
+    }
+    body.extend((opus.len() as u16).to_be_bytes());
+    body.extend(opus);
+    packet(0x510, body)
+}
+
+fn live_end(error: u16, session: u32, produced: u32, sent: u32, dropped: u32) -> Packet {
+    let mut body = error.to_be_bytes().to_vec();
+    for field in [session, 0, produced, sent, dropped] {
+        body.extend(field.to_be_bytes());
+    }
+    packet(0x511, body)
+}
+
+#[test]
+fn live_preview_reports_first_middle_and_trailing_gaps_in_order() {
+    let v = LivePreviewValidator::new();
+    assert!(matches!(
+        v.accept(live_start()).unwrap().as_slice(),
+        [LivePreviewEvent::Start { .. }]
+    ));
+    for (sequence, offset, opus, expected) in [
+        (1, 5, &[0x7c][..], (0, 0, 1, 5)),
+        (4, 12, &[0x7c, 0, 0][..], (2, 6, 2, 6)),
+    ] {
+        match v
+            .accept(live_data(1, sequence, offset, opus))
+            .unwrap()
+            .as_slice()
+        {
+            [LivePreviewEvent::Gap { value: gap }, LivePreviewEvent::Data { value: data }] => {
+                assert_eq!(gap.session_id, 1);
+                assert_eq!(
+                    (
+                        gap.sequence,
+                        gap.byte_offset,
+                        gap.missing_frames,
+                        gap.missing_bytes
+                    ),
+                    expected
+                );
+                assert_eq!(
+                    (data.sequence, data.byte_offset, data.data.as_slice()),
+                    (sequence, offset, opus)
+                );
+            }
+            events => panic!("Unexpected preview events: {events:?}"),
+        }
+    }
+    assert!(matches!(
+        v.accept(live_data(1, 5, 15, &[0x7c])).unwrap().as_slice(),
+        [LivePreviewEvent::Data { .. }]
+    ));
+    match v.accept(live_end(0, 1, 23, 5, 5)).unwrap().as_slice() {
+        [LivePreviewEvent::Gap { value: gap }, LivePreviewEvent::End { value: end }] => {
+            assert_eq!(
+                (
+                    gap.session_id,
+                    gap.sequence,
+                    gap.byte_offset,
+                    gap.missing_frames,
+                    gap.missing_bytes
+                ),
+                (1, 6, 16, 2, 7)
+            );
+            assert_eq!(
+                (end.produced_bytes, end.sent_bytes, end.dropped_frames),
+                (23, 5, 5)
+            );
+        }
+        events => panic!("Unexpected preview events: {events:?}"),
+    }
+    assert!(v.accept(live_end(0, 1, 23, 5, 5)).is_err());
+}
+
+#[test]
+fn live_preview_rejects_bad_data_and_closes() {
+    let before_start = LivePreviewValidator::new();
+    assert!(before_start.accept(live_data(1, 0, 0, &[0x7c])).is_err());
+    for (session, sequence, bytes, toc) in [
+        (1, 1, 1, 0x7c),       // duplicate
+        (1, 0, 3, 0x7c),       // backward sequence
+        (1, 3, 1, 0x7c),       // backward offset
+        (2, 3, 3, 0x7c),       // wrong session
+        (1, 2, 3, 0x7c),       // offset-only jump
+        (1, 3, 2, 0x7c),       // sequence-only jump
+        (1, 4, 3, 0x7c),       // too few missing bytes
+        (1, 3, 103, 0x7c),     // too many missing bytes
+        (1, 3000, 3000, 0x7c), // duration limit
+        (1, 2, 2, 0x78),       // wrong Opus channels
+    ] {
+        let v = LivePreviewValidator::new();
+        v.accept(live_start()).unwrap();
+        v.accept(live_data(1, 0, 0, &[0x7c])).unwrap();
+        v.accept(live_data(1, 1, 1, &[0x7c])).unwrap();
+        assert!(v
+            .accept(live_data(session, sequence, bytes, &[toc]))
+            .is_err());
+        assert!(v.accept(live_data(1, 2, 2, &[0x7c])).is_err());
+    }
+}
+
+#[test]
+fn live_preview_end_reconciles_only_device_drops() {
+    for (session, produced, sent, dropped) in [
+        (2, 6, 1, 1),
+        (1, 6, 1, 0),
+        (1, 5, 1, 1),
+        (1, 6, 2, 1),
+        (1, 7, 1, 1),
+        (1, 6, 1, 2),
+        (1, 107, 1, 2),
+        (1, 3005, 1, 3000),
+        (1, u32::MAX, 1, u32::MAX),
+    ] {
+        let v = LivePreviewValidator::new();
+        v.accept(live_start()).unwrap();
+        v.accept(live_data(1, 1, 5, &[0x7c])).unwrap();
+        assert!(v
+            .accept(live_end(0, session, produced, sent, dropped))
+            .is_err());
+        assert!(v.accept(live_end(0, 1, 6, 1, 1)).is_err());
+    }
+
+    let v = LivePreviewValidator::new();
+    v.accept(live_start()).unwrap();
+    assert!(matches!(
+        v.accept(live_end(7, 1, 3, 0, 1)),
+        Err(CoreError::Device { code: 7 })
+    ));
+    let v = LivePreviewValidator::new();
+    v.accept(live_start()).unwrap();
+    assert!(matches!(
+        v.accept(live_end(0, 1, 3, 0, 1)).unwrap().as_slice(),
+        [
+            LivePreviewEvent::Gap {
+                value: LiveGap {
+                    sequence: 0,
+                    byte_offset: 0,
+                    missing_frames: 1,
+                    missing_bytes: 3,
+                    ..
+                }
+            },
+            LivePreviewEvent::End { .. },
+        ]
+    ));
+
+    let strict = LiveValidator::new();
+    strict.accept(live_start()).unwrap();
+    strict.accept(live_data(1, 0, 0, &[0x7c])).unwrap();
+    assert!(strict.accept(live_end(0, 1, 4, 1, 1)).is_err());
+}
 #[test]
 fn connection_rssi_signed_range_and_strict_response() {
     for value in [-127i8, -65, -1, 0, 20] {
@@ -578,4 +745,163 @@ fn unlimited_config_roundtrips_like_python_sdk() {
     let c = parse_recording_config(body).unwrap();
     assert_eq!(c.max_duration_ms, 0);
     assert_eq!(&recording_config_body(c).unwrap()[12..], &[0, 0]);
+}
+
+#[test]
+fn platform_independent_rules() {
+    assert_eq!(device_error_message(5), "command not exist");
+    assert_eq!(device_error_message(77), "device error 77");
+    let spec = ble_transport_spec();
+    assert_eq!(
+        (spec.write_chunk_size, spec.ota_write_chunk_limit),
+        (20, 244)
+    );
+    assert!(spec.service_uuid.starts_with("6E400001"));
+    for name in [" ring ", "OPEN ZILO", "prefix Open Zilo-abc"] {
+        assert!(is_compatible_ring_name(Some(name.into())), "{name}");
+    }
+    for name in ["earring", "ringing", "Open Zilo- "] {
+        assert!(!is_compatible_ring_name(Some(name.into())), "{name}");
+    }
+    assert!(!is_compatible_ring_name(None));
+    assert_eq!(normalize_ble_address("AA:bb-01".into()), "aabb01");
+    assert!(ble_address_matches("aa-bb".into(), Some("AA:BB".into())));
+    assert!(ble_address_matches("x".into(), None));
+    assert!(!ble_address_matches("x".into(), Some("y".into())));
+    assert_eq!(
+        local_device_key("  ABC ".into()).unwrap(),
+        local_device_key("abc".into()).unwrap()
+    );
+    assert_eq!(local_device_key("abc".into()).unwrap().len(), 64);
+    assert!(local_device_key(" ".into()).is_err());
+    assert!(boards_match("a//b".into(), "/a/b".into()));
+    assert!(!boards_match("a/../b".into(), "a/../b".into()));
+    assert!(!boards_match("".into(), "".into()));
+}
+
+fn speex_sine_packets(rate: u32, quality: u8, frames: usize) -> Vec<Vec<u8>> {
+    let mut enc = oxideav_speex::SpeexStreamEncoder::new(rate, quality).unwrap();
+    let n = enc.frame_samples();
+    (0..frames)
+        .map(|f| {
+            let pcm: Vec<i16> = (0..n)
+                .map(|i| {
+                    let t = (f * n + i) as f64 / f64::from(rate);
+                    (8000.0 * (2.0 * std::f64::consts::PI * 440.0 * t).sin()) as i16
+                })
+                .collect();
+            enc.encode_frame(&pcm).unwrap()
+        })
+        .collect()
+}
+fn pcm_energy(bytes: &[u8]) -> f64 {
+    bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| f64::from(i16::from_le_bytes(*b)).powi(2))
+        .sum::<f64>()
+}
+#[test]
+fn native_speex_decodes_all_legacy_container_forms() {
+    for (rate, quality) in [(8000u32, 5u8), (16000, 8)] {
+        let packets = speex_sine_packets(rate, quality, 10);
+        let frame = (rate / 50) as usize;
+        let format = PcmFormat {
+            sample_rate_hz: rate,
+            channels: 1,
+            bit_depth: 16,
+        };
+        // Ogg
+        let ogg = export_ogg_speex(packets.clone(), rate, 7).unwrap();
+        let decoded = decode_speex_pcm(ogg, format.clone(), 3, None, 540, None).unwrap();
+        assert_eq!(decoded.source_type, "ogg-speex");
+        assert_eq!(decoded.pcm_bytes.len(), 10 * frame * 2);
+        assert!(pcm_energy(&decoded.pcm_bytes) > 1e6);
+        // Length-prefixed packets
+        let mut wire = Vec::new();
+        for p in &packets {
+            wire.extend((p.len() as u16).to_le_bytes());
+            wire.extend(p);
+        }
+        wire.extend([0, 0]);
+        let by_packet = decode_speex_pcm(wire, format.clone(), 3, None, 540, None).unwrap();
+        assert_eq!(by_packet.source_type, "packet-speex");
+        assert_eq!(by_packet.packet_count, 10);
+        assert_eq!(by_packet.pcm_bytes, decoded.pcm_bytes);
+        // Raw equal-size packets
+        let size = packets.iter().map(Vec::len).max().unwrap();
+        if packets.iter().all(|p| p.len() == size) {
+            let raw: Vec<u8> = packets.concat();
+            let raw =
+                decode_speex_pcm(raw, format.clone(), 3, Some(size as u32), 540, None).unwrap();
+            assert_eq!(raw.source_type, "raw-speex");
+            assert_eq!(raw.pcm_bytes, decoded.pcm_bytes);
+        }
+        // Streaming decoder matches the one-shot result
+        let ring = RingSpeexDecoder::new(rate, 1).unwrap();
+        let streamed: Vec<u8> = packets
+            .iter()
+            .flat_map(|p| ring.decode_packet(p.clone()).unwrap())
+            .collect();
+        assert_eq!(streamed, decoded.pcm_bytes);
+        assert_eq!(ring.format().sample_rate_hz, rate);
+    }
+}
+#[test]
+fn native_speex_converts_channels_rate_and_depth() {
+    let packets = speex_sine_packets(8000, 5, 10);
+    let mut wire = Vec::new();
+    for p in &packets {
+        wire.extend((p.len() as u16).to_le_bytes());
+        wire.extend(p);
+    }
+    let eight = decode_speex_pcm(
+        wire.clone(),
+        PcmFormat {
+            sample_rate_hz: 8000,
+            channels: 2,
+            bit_depth: 8,
+        },
+        3,
+        None,
+        540,
+        None,
+    )
+    .unwrap();
+    assert_eq!(eight.pcm_bytes.len(), 10 * 160 * 2);
+    assert!(eight.pcm_bytes.iter().any(|b| b.abs_diff(128) > 20));
+    let wav = export_wav_pcm(eight.pcm_bytes, eight.format).unwrap();
+    assert!(is_wav(wav));
+    assert!(decode_speex_pcm(
+        vec![],
+        PcmFormat {
+            sample_rate_hz: 8000,
+            channels: 1,
+            bit_depth: 16
+        },
+        3,
+        None,
+        540,
+        None
+    )
+    .is_err());
+    assert!(decode_speex_pcm(
+        vec![9; 7],
+        PcmFormat {
+            sample_rate_hz: 8000,
+            channels: 3,
+            bit_depth: 16
+        },
+        3,
+        None,
+        540,
+        None
+    )
+    .is_err());
+    assert!(RingSpeexDecoder::new(44100, 1).is_err());
+    assert!(RingSpeexDecoder::new(8000, 1)
+        .unwrap()
+        .decode_packet(vec![])
+        .is_err());
 }

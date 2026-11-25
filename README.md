@@ -2,62 +2,66 @@
 
 [中文](README.zh-CN.md) · MPL-2.0
 
-Portable OpenZilo protocol, device state machines, validation and data-processing
-algorithms in Rust, with native Python and Kotlin bindings.
+**Unified OpenZilo interaction library.** A high-performance, pure-Rust core for the
+OpenZilo protocol engine, device session state machines, audio decoding (Opus and
+legacy Speex), IMU calibration with 6-DoF attitude fusion, and signed OTA. Native
+Python and Kotlin bindings (UniFFI) give every platform identical data structures and
+interaction semantics.
 
-## Repository boundaries
+## Ecosystem and platform boundaries
 
 | Repository | Responsibility |
 | --- | --- |
-| **libopenzilo** | Rust core, UniFFI configuration, native bindings and core tests |
-| [OpenZilo](https://github.com/ziloai/OpenZilo) | Python BLE/asyncio SDK, CLI and Python examples |
+| **libopenzilo** | Unified Rust interaction core, UniFFI bindings (`libopenzilo` / `com.zilo.libopenzilo`) and the cross-platform core tests |
+| [OpenZilo](https://github.com/ziloai/OpenZilo) | Python BLE/asyncio SDK, CLI and Python examples built on `libopenzilo` |
 | [OpenZilo-Connect](https://github.com/ziloai/OpenZilo-Connect) | Android companion app, BLE/GATT integration in `ring-core`, and the `connect-api` client AAR |
 
-Python and Android are peer consumers of this library. Neither platform SDK is
-maintained here. UI, permissions, background execution and file I/O belong to SDK
-adapters or applications; this crate has no BLE stack or application runtime.
+Hosts provide BLE scanning and GATT I/O, OS permissions, monotonic clocks, background
+execution and file persistence. `libopenzilo` owns everything platform-independent:
+wire frames, capability checks, request recovery, audio codecs, sensor calibration and
+OTA verification. The crate has no BLE stack, UI or application runtime.
 
-The core covers protocol v4/CRC, capability admission, request recovery,
-connection RSSI queries, recording state, normal/fast downloads, automatic saved-recording
-reception and sink backpressure, live validation,
-IMU conversion/calibration, static-window collection and portable profiles,
-packetized/raw Speex parsing,
-OP2C/Ogg/WAV export, distance
-validity, signed firmware verification and OTA transfer/running-version checks.
-Distance utilities validate supplied measurements; they do not acquire OS ranging
-measurements or estimate direction. No public PPG interface is provided.
+## Core capabilities
 
-Stream decoding drops complete frames with invalid body CRC while preserving valid
-neighboring frames and pending requests. `DecodeBatch.dropped_crc_packets` and
-`DeviceEngine.take_dropped_crc_packets()` expose diagnostics; single-packet decoding
-still rejects CRC errors, and other malformed protocol data remains fatal to sessions.
+| Area | Capabilities |
+| --- | --- |
+| Protocol and transport rules | Protocol v4 framing and CRC; stream decoding that drops corrupt frames and keeps valid neighbors; NUS UUIDs and write limits, ring-name and address matching |
+| Sessions and policy | `DeviceEngine` / `DeviceSession` request recovery, capability admission and legacy profiles, connection RSSI, recording state, `RingBindings` for several rings, shared error text |
+| Audio | Pure-Rust Opus (`RingOpusDecoder`, `decode_opus_pcm`) and legacy Speex (`RingSpeexDecoder`, `decode_speex_pcm`) to PCM, dual-mic denoising, OP2C/Ogg/WAV containers, stored-file download and automatic reception, live validation; no ffmpeg or C codec |
+| IMU | Raw-to-physical conversion, static-window collection, six-face and gyro-bias calibration with validation, 6-DoF quaternion attitude and posture classification, portable and scoped calibration profiles |
+| Firmware | Signed bundle verification (ECDSA P-256), `OtaTransfer`, board identity and running-version checks |
+| Distance | Validity, quality and expiry tracking for host-supplied measurements; no OS ranging and no public PPG interface |
 
-## Ring audio decoding
+## Pure-Rust audio
 
-`RingOpusDecoder` decodes ordered 20 ms ring packets; `decode_opus_pcm()` decodes
-an OP2C recording. Both return 16 kHz PCM16LE, preserving mono or interleaved L/R
-stereo. For synchronized stereo with aligned speech, use one `DualMicDenoiser`
-per stream to convert complete 20 ms frames to mono. This baseline attenuates
-energy that differs between the mics; it does not align channels or remove noise
-common to both. The decoder uses pure Rust [opus1](LICENSE-opus1); include its
-notice when distributing binaries.
+`RingOpusDecoder` and `decode_opus_pcm()` produce 16 kHz PCM16LE and preserve mono or
+interleaved L/R stereo. `RingSpeexDecoder` and `decode_speex_pcm()` decode Ogg Speex,
+length-prefixed or fixed-size raw packets to the requested rate, channels and depth.
+For synchronized stereo with aligned speech, use one `DualMicDenoiser` per stream to
+convert complete 20 ms frames to mono; it attenuates energy that differs between the
+mics and does not align channels or remove noise common to both.
+
+Use `LiveValidator` for complete live recordings. For preview playback only, opt in
+with `LivePreviewValidator`: each accepted packet returns events in order, with a
+`Gap` before the DATA or END that revealed missing 20 ms frames. Preview END
+reconciles device drops, not completeness; the application chooses whether to conceal
+the loss or insert silence.
+
+Opus uses pure Rust [opus1](LICENSE-opus1) and Speex uses pure Rust `oxideav-speex`
+([MIT](LICENSE-oxideav)); include these notices when distributing binaries.
 
 ## Multiple rings
 
-`RingBindings` is optional; existing `DeviceEngine` and `DeviceSession` callers do
-not need to change. Bind a host-assigned ID to the CPU ID (or serial number) from
-system information, persist `list()` in the host, and use `restore()` on restart.
-After the host probes a BLE link, `attach()` checks its identity and returns a
-separate engine and generation for that link. Route callbacks to the engine
-returned by that attachment, not to a fresh lookup by ID. Use `detach(id,
-attachment)` when the transport closes; the registry owns engine open/close.
-Detach before unbinding. BLE, persistence, and reconnect scheduling remain host
-responsibilities.
+`RingBindings` is optional. Bind a host-assigned ID to the CPU ID (or serial number),
+persist `list()`, and `restore()` on restart. After probing a BLE link, `attach()`
+checks the identity and returns a separate engine and generation; route callbacks to
+that engine. Call `detach(id, attachment)` when the transport closes and detach before
+`unbind()`. BLE, persistence and reconnect scheduling stay with the host.
 
-## Build and validate
+## Build, bindings and validation
 
-Rust stable is required. Python packaging additionally needs Python 3.10+ and
-maturin; building this repository does not require a JDK, Android SDK or NDK.
+Rust 1.95 or newer is required. Python wheels also need Python 3.10+ and maturin. No C
+compiler, JDK, Android SDK or NDK is needed to build or test the core.
 
 ```sh
 cargo fmt --check
@@ -66,12 +70,13 @@ cargo test --locked
 maturin build --release --locked --out dist
 ```
 
-The Rust crate, Python distribution and Python import are named `libopenzilo`.
+The Rust crate, Python distribution and Python import are all named `libopenzilo`.
 
 ```python
 import libopenzilo as core
 wire = core.encode_packet(0x0101, b"")
 assert core.decode_packet(wire).command == 0x0101
+print(core.library_info().features)
 ```
 
 Generate Kotlin bindings from the host library (Linux example):
@@ -82,17 +87,14 @@ cargo run --locked --features cli --bin uniffi-bindgen -- generate --library tar
 ```
 
 macOS uses `.dylib`; Windows uses `libopenzilo.dll`. Generated Kotlin records use
-`com.zilo.libopenzilo`. Android compilation and integration are maintained in the
-Android SDK repository, which pins a tested core revision.
-
-Wheels are native to their build OS/architecture. CI builds Linux x86_64, macOS
-arm64 and Windows x86_64 wheels, installs them and runs the native smoke check.
-Publish validated core wheels before the dependent Python SDK.
+`com.zilo.libopenzilo`. Wheels are native to their build OS and architecture; CI builds
+Linux x86_64, macOS arm64 and Windows x86_64 wheels, installs them and runs the native
+smoke check. Publish validated core wheels before dependent SDKs.
 
 See [native API](docs/api.md), [architecture](docs/architecture.md) and
 [validation](docs/validation.md). `library_info()` reports the linked library's
-version, API contract and available features. Native PCM decoding is unavailable
-in this build; platform SDKs may use their own optional decoders.
+version, API contract and available features. Hardware behavior requires validation
+on the target device.
 
 ## Community
 

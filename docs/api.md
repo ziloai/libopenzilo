@@ -12,15 +12,17 @@
 | Connection RSSI | `DeviceRequest::ConnectionRssi`, `parse_connection_rssi`; requires `connection_rssi` v1 |
 | Recording | Configuration/status parsers, `recording_completion`, engine activity states |
 | Stored audio | `DownloadTransfer`, `AudioSinkTransfer`, `AudioAssembler`, `AutoAudioTransfer` |
-| Live audio | `LiveValidator` and typed START/DATA/END events |
-| IMU | Raw/physical batches, `ImuContinuity`, `identity_imu_calibration`, `ImuStaticCollector`, calibration and validation functions |
-| Profiles | Profile parsing, serialization and device/source binding checks |
+| Live audio | `LiveValidator` for complete recordings; `LivePreviewValidator` for opt-in START/GAP/DATA/END events |
+| IMU | Raw/physical batches (`raw_imu_to_physical`, `apply_imu_calibration`), `ImuContinuity`, `identity_imu_calibration`, `ImuStaticCollector`, calibration/validation, `ImuAttitudeEstimator`, `ImuAxisMapping`, `RingPosture`, `quaternion_to_opengl_matrix` |
+| Profiles | Profile parsing, serialization, `stable_device_key`, `scoped_device_key` and device/source binding checks |
 | Audio | OP2C, Ogg Opus/Speex, PCM WAV, ring Opus-to-PCM decoding and aligned dual-mic suppression |
-| Legacy Speex | `parse_packetized_speex_stream`, `split_raw_speex_packets`, `speex_packet_size`, `normalize_decoded_speex_pcm`, `is_wav`, `is_ogg_speex` |
+| Legacy Speex | `decode_speex_pcm` (Ogg, length-prefixed or raw packets), `decode_ogg_speex_pcm`, `RingSpeexDecoder`, `parse_packetized_speex_stream`, `split_raw_speex_packets`, `speex_packet_size`, `normalize_decoded_speex_pcm`, `is_wav`, `is_ogg_speex` |
 | Device events | `parse_audio_record_result` (050A saved file index), `parse_device_event`, `sensor_gesture_name` |
 | Distance | `DistanceTracker`, observations, quality and expiry states |
 | Firmware | `inspect_firmware_bundle`, `OtaTransfer`, running identity/version verification |
 | Timing | `DeadlineBudget`; caller-provided monotonic milliseconds |
+| Transport rules | `ble_transport_spec` (NUS UUIDs, write chunk limits), `is_compatible_ring_name`, `normalize_ble_address`, `ble_address_matches`; hosts still own scanning and writing |
+| Shared semantics | `device_error_message`, `local_device_key`, `boards_match`, `firmware_bundle_manifest_json` |
 
 The host serializes engine calls, sends complete request frames, supplies incoming
 notifications/write failures/disconnects and drives deadlines. Timeout/cancellation
@@ -50,13 +52,16 @@ pushes infer size from the end frame and request metadata only to recover a gap 
 stall. Both paths bound storage, check overlaps and file identity, and use caller time.
 The host must subscribe before the first event and serialize competing audio operations.
 
-For legacy Speex, pass `540` as `max_packet_size` and `Some(1026)` as
+For legacy Speex, `decode_speex_pcm` decodes Ogg Speex, length-prefixed packets or
+fixed-size raw packets in pure Rust (no platform decoder) to the requested PCM format
+(8 kHz/16 kHz/32 kHz stream chosen from the target rate, mono/stereo, 8/16-bit, linear
+resampling). For packet parsing, pass `540` as `max_packet_size` and `Some(1026)` as
 `framed_block_size` (`1026` in Python); `None` disables outer-frame fallback. Packet
 parsers return `None` for nonmatching data, allowing callers to try the fixed-size
 format with quality `3` and `bits_size=None` (20-byte packets). Invalid zero size
-options are errors. `normalize_decoded_speex_pcm` only normalizes bytes supplied by
-a platform decoder; it does not decode Speex. Format detectors check signatures,
-not the integrity of a complete container.
+options are errors. `RingSpeexDecoder` decodes ordered packets incrementally.
+`normalize_decoded_speex_pcm` remains for bytes produced by an external decoder. Format
+detectors check signatures, not the integrity of a complete container.
 
 `ImuStaticCollector` discards settling samples and collects a bounded, contiguous
 raw window before calling static analysis. Durations are milliseconds (2000–120000,
@@ -71,7 +76,7 @@ files, acquire ranging measurements, play audio or provide language-native async
 SDK operations. Those belong to the two peer SDKs:
 
 - [Python SDK and CLI](https://github.com/ziloai/OpenZilo)
-- [Android SDK](https://github.com/ziloai/openzilo-android)
+- [OpenZilo-Connect](https://github.com/ziloai/OpenZilo-Connect)
 
 See [architecture](architecture.md) for platform boundaries. Android lifecycle,
 GATT, Future/Flow, AAR/Maven and sample-app documentation is maintained in the

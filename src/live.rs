@@ -4,6 +4,10 @@ use crate::{
     RecordingConfig, Result,
 };
 use std::sync::Mutex;
+
+const MAX_LIVE_FRAMES: u32 = 3000;
+const MAX_LIVE_PACKET_BYTES: u32 = 100;
+
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct LiveStart {
     pub session_id: u32,
@@ -30,6 +34,21 @@ pub struct LiveEnd {
 #[derive(Clone, Debug, uniffi::Enum)]
 pub enum LiveEvent {
     Start { value: LiveStart },
+    Data { value: LiveData },
+    End { value: LiveEnd },
+}
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct LiveGap {
+    pub session_id: u32,
+    pub sequence: u32,
+    pub byte_offset: u32,
+    pub missing_frames: u32,
+    pub missing_bytes: u32,
+}
+#[derive(Clone, Debug, uniffi::Enum)]
+pub enum LivePreviewEvent {
+    Start { value: LiveStart },
+    Gap { value: LiveGap },
     Data { value: LiveData },
     End { value: LiveEnd },
 }
@@ -67,7 +86,7 @@ pub fn parse_live_data(body: Vec<u8>, channels: u8) -> Result<LiveData> {
     let seq = r.u32()?;
     let off = r.u32()?;
     let n = r.u16()? as usize;
-    if id == 0 || !(1..=100).contains(&n) || r.remaining() != n {
+    if id == 0 || !(1..=MAX_LIVE_PACKET_BYTES as usize).contains(&n) || r.remaining() != n {
         return Err(invalid("Invalid live DATA length or session"));
     }
     let data = r.bytes(n)?.to_vec();
@@ -106,7 +125,9 @@ pub fn parse_live_end(body: Vec<u8>) -> Result<LiveEnd> {
 struct State {
     start: Option<LiveStart>,
     sequence: u32,
-    bytes: u32,
+    byte_offset: u32,
+    received_bytes: u32,
+    missing_frames: u32,
     ended: bool,
     failed: bool,
 }
@@ -122,18 +143,71 @@ impl LiveValidator {
         Self::default()
     }
     pub fn accept(&self, packet: Packet) -> Result<LiveEvent> {
-        let mut s = self.state.lock().unwrap();
-        if s.ended || s.failed {
+        self.state
+            .lock()
+            .unwrap()
+            .accept(packet, false)
+            .map(|(_, event)| event)
+    }
+}
+
+/// Allows reported loss for playback; a successful END does not imply completeness.
+#[derive(uniffi::Object, Default)]
+pub struct LivePreviewValidator {
+    state: Mutex<State>,
+}
+#[uniffi::export]
+impl LivePreviewValidator {
+    #[uniffi::constructor]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Emits a Gap, if any, immediately before the DATA or END that revealed it.
+    pub fn accept(&self, packet: Packet) -> Result<Vec<LivePreviewEvent>> {
+        let (gap, event) = self.state.lock().unwrap().accept(packet, true)?;
+        let event = match event {
+            LiveEvent::Start { value } => LivePreviewEvent::Start { value },
+            LiveEvent::Data { value } => LivePreviewEvent::Data { value },
+            LiveEvent::End { value } => LivePreviewEvent::End { value },
+        };
+        let mut events = Vec::with_capacity(1 + usize::from(gap.is_some()));
+        if let Some(value) = gap {
+            events.push(LivePreviewEvent::Gap { value });
+        }
+        events.push(event);
+        Ok(events)
+    }
+}
+
+impl State {
+    fn accept(&mut self, packet: Packet, preview: bool) -> Result<(Option<LiveGap>, LiveEvent)> {
+        if self.ended || self.failed {
             return Err(invalid("Live stream is already closed"));
         }
-        let result = validate(&mut s, packet);
+        let result = validate(self, packet, preview);
         if result.is_err() {
-            s.failed = true;
+            self.failed = true;
         }
         result
     }
+
+    fn gap(&self, session_id: u32, frames: u32, bytes: u32) -> Option<LiveGap> {
+        (frames != 0).then_some(LiveGap {
+            session_id,
+            sequence: self.sequence,
+            byte_offset: self.byte_offset,
+            missing_frames: frames,
+            missing_bytes: bytes,
+        })
+    }
 }
-fn validate(s: &mut State, p: Packet) -> Result<LiveEvent> {
+
+fn consistent_gap(frames: u32, bytes: u32) -> bool {
+    (frames..=frames * MAX_LIVE_PACKET_BYTES).contains(&bytes)
+}
+
+fn validate(s: &mut State, p: Packet, preview: bool) -> Result<(Option<LiveGap>, LiveEvent)> {
     match p.command {
         0x50f => {
             if s.start.is_some() {
@@ -141,7 +215,7 @@ fn validate(s: &mut State, p: Packet) -> Result<LiveEvent> {
             }
             let v = parse_live_start(p.body)?;
             s.start = Some(v.clone());
-            Ok(LiveEvent::Start { value: v })
+            Ok((None, LiveEvent::Start { value: v }))
         }
         0x510 => {
             let start = s
@@ -150,19 +224,29 @@ fn validate(s: &mut State, p: Packet) -> Result<LiveEvent> {
                 .ok_or_else(|| invalid("Live recording did not begin with START"))?;
             let v = parse_live_data(p.body, start.channels)?;
             if v.session_id != start.session_id
-                || v.sequence != s.sequence
-                || v.byte_offset != s.bytes
+                || v.sequence < s.sequence
+                || v.byte_offset < s.byte_offset
             {
                 return Err(invalid(
                     "Live recording session, sequence or offset mismatch",
                 ));
             }
-            if s.sequence >= 3000 {
+            if v.sequence >= MAX_LIVE_FRAMES {
                 return Err(invalid("Live recording exceeds firmware's 60-second limit"));
             }
-            s.sequence += 1;
-            s.bytes += v.data.len() as u32;
-            Ok(LiveEvent::Data { value: v })
+            let frames = v.sequence - s.sequence;
+            let bytes = v.byte_offset - s.byte_offset;
+            if (!preview && frames != 0) || !consistent_gap(frames, bytes) {
+                return Err(invalid(
+                    "Live recording session, sequence or offset mismatch",
+                ));
+            }
+            let gap = s.gap(v.session_id, frames, bytes);
+            s.missing_frames += frames;
+            s.sequence = v.sequence + 1;
+            s.byte_offset = v.byte_offset + v.data.len() as u32;
+            s.received_bytes += v.data.len() as u32;
+            Ok((gap, LiveEvent::Data { value: v }))
         }
         0x511 => {
             let start = s
@@ -176,13 +260,25 @@ fn validate(s: &mut State, p: Packet) -> Result<LiveEvent> {
             if v.error_code != 0 {
                 return Err(crate::CoreError::Device { code: v.error_code });
             }
-            if v.dropped_frames != 0 || v.produced_bytes != s.bytes || v.sent_bytes != s.bytes {
-                return Err(invalid(
-                    "Live recording is incomplete according to END counters",
-                ));
+            let invalid_end = || invalid("Live recording is incomplete according to END counters");
+            let frames = v
+                .dropped_frames
+                .checked_sub(s.missing_frames)
+                .ok_or_else(invalid_end)?;
+            let bytes = v
+                .produced_bytes
+                .checked_sub(s.byte_offset)
+                .ok_or_else(invalid_end)?;
+            if v.sent_bytes != s.received_bytes
+                || (!preview && frames != 0)
+                || frames > MAX_LIVE_FRAMES - s.sequence
+                || !consistent_gap(frames, bytes)
+            {
+                return Err(invalid_end());
             }
+            let gap = s.gap(v.session_id, frames, bytes);
             s.ended = true;
-            Ok(LiveEvent::End { value: v })
+            Ok((gap, LiveEvent::End { value: v }))
         }
         _ => Err(invalid("Unexpected live command")),
     }

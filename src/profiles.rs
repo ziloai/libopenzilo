@@ -60,6 +60,38 @@ pub fn stable_device_key(info: DeviceInfo) -> Result<String> {
     }
     Ok(digest(&bytes))
 }
+/// Platform locator binding key (hashed, case-insensitive) for local v1 profiles.
+#[uniffi::export]
+pub fn local_device_key(locator: String) -> Result<String> {
+    let locator = locator.trim();
+    if locator.is_empty() {
+        return Err(invalid("A device address/identifier is required"));
+    }
+    Ok(digest(locator.to_lowercase().as_bytes()))
+}
+#[uniffi::export]
+pub fn scoped_device_key(info: DeviceInfo, client_scope: String) -> Result<String> {
+    let scope = client_scope.trim();
+    if scope.is_empty() || scope != client_scope {
+        return Err(invalid("Client scope must be nonempty and trimmed"));
+    }
+    if info.model.is_empty() || (info.cpuid.is_empty() && info.sn.is_empty()) {
+        return Err(CoreError::Incompatible {
+            detail: "A verified stable device identity is required for a scoped key".into(),
+        });
+    }
+    let mut bytes = b"OpenZilo scoped device identity v1\0".to_vec();
+    for v in [
+        scope,
+        info.model.as_str(),
+        info.cpuid.as_str(),
+        info.sn.as_str(),
+    ] {
+        bytes.extend((v.len() as u64).to_be_bytes());
+        bytes.extend(v.as_bytes());
+    }
+    Ok(digest(&bytes))
+}
 #[uniffi::export]
 pub fn validate_calibration_profile(profile: CalibrationProfile) -> Result<()> {
     validate_imu_parameters(profile.calibration.clone())?;

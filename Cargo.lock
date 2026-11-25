@@ -114,6 +114,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db"
 
 [[package]]
+name = "bytemuck"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
+
+[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -481,9 +487,11 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "libopenzilo"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "opus1",
+ "oxideav-ogg",
+ "oxideav-speex",
  "p256",
  "regex",
  "serde",
@@ -558,6 +566,35 @@ name = "opus1"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8371789de09e00d6805166461224f024848c1fd155c6df28da8c19eebcc3650d"
+
+[[package]]
+name = "oxideav-core"
+version = "0.1.43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce90bfbe978dfc46d0c98d137b7c4566ac8eaae8c9209585eb53a8aedb0ef53c"
+dependencies = [
+ "bytemuck",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "oxideav-ogg"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2f64e5e8b7ca99ce6e7ad4cab064cd554d1c4c1161eea015cbcb12b9c5ced0d"
+dependencies = [
+ "oxideav-core",
+]
+
+[[package]]
+name = "oxideav-speex"
+version = "0.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60a4a2dc6165fa4ada2e46a8d0f2328f6643651ad67107ca60c4eb92a6c3ca66"
+dependencies = [
+ "oxideav-core",
+]
 
 [[package]]
 name = "p256"

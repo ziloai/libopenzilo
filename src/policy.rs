@@ -213,7 +213,29 @@ pub fn library_info() -> LibraryInfo {
             "connection_rssi".into(),
             "speex_stream_parsing".into(),
             "imu_static_collection".into(),
+            "imu_attitude_v1".into(),
+            "scoped_device_key".into(),
             "auto_audio_transfer".into(),
+            "ble_transport_spec".into(),
+            "local_device_key".into(),
+            "speex_pcm_decoder".into(),
         ],
     }
+}
+#[uniffi::export]
+pub fn device_error_message(code: u16) -> String {
+    match code {
+        0 => "success",
+        1 => "unknown error",
+        2 => "device busy",
+        3 => "file not exist",
+        4 => "command group not exist",
+        5 => "command not exist",
+        6 => "operation timeout",
+        7 => "invalid parameter",
+        8 => "communication error",
+        9 => "unsupported schema",
+        _ => return format!("device error {code}"),
+    }
+    .into()
 }

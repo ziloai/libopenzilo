@@ -2,7 +2,7 @@
 
 This repository maintains only the portable library and native bindings. The
 [Python SDK](https://github.com/ziloai/OpenZilo) and
-[Android SDK](https://github.com/ziloai/openzilo-android) are peer repositories.
+[OpenZilo-Connect](https://github.com/ziloai/OpenZilo-Connect) are peer repositories.
 Android SDK sources, Gradle builds, platform tests and examples live in the latter.
 
 The portable Rust library has no BLE stack, UI, filesystem, network, account or
